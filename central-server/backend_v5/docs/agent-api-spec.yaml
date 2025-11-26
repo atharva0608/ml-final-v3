@@ -1,0 +1,1028 @@
+openapi: 3.0.3
+info:
+  title: AWS Spot Optimizer - Agent API
+  description: |
+    Agent-to-Backend Communication API for AWS Spot Optimizer v6.0
+
+    This API provides endpoints for distributed agents to communicate with the central server.
+    All endpoints require authentication via Bearer token and support idempotency via X-Request-ID header.
+
+    **Key Features:**
+    - Idempotent operations via X-Request-ID header
+    - Optimistic locking for concurrent updates
+    - Emergency flow support (rebalance/termination notices)
+    - Comprehensive error handling with structured responses
+
+  version: 6.0.0
+  contact:
+    name: AWS Spot Optimizer Team
+    email: support@spot-optimizer.io
+  license:
+    name: Proprietary
+    url: https://spot-optimizer.io/license
+
+servers:
+  - url: https://api.spot-optimizer.io
+    description: Production server
+  - url: https://staging-api.spot-optimizer.io
+    description: Staging server
+  - url: http://localhost:5000
+    description: Development server
+
+tags:
+  - name: Agent Lifecycle
+    description: Agent registration, heartbeat, and configuration
+  - name: Emergency Flows
+    description: Rebalance and termination notice handling
+  - name: Commands
+    description: Command queue and execution reporting
+  - name: Reporting
+    description: Pricing, switch, and cleanup reports
+  - name: Decision Engine
+    description: ML-based switching decisions
+
+security:
+  - BearerAuth: []
+
+paths:
+  # ============================================================================
+  # AGENT LIFECYCLE
+  # ============================================================================
+
+  /api/agents/register:
+    post:
+      tags:
+        - Agent Lifecycle
+      summary: Register new agent or update existing
+      description: |
+        Register a new agent with the central server or update an existing agent's information.
+
+        **Idempotency:** This endpoint supports idempotency via X-Request-ID header.
+
+        **Zombie Protection:** The endpoint will reject registrations from instances that are marked
+        as zombie or non-primary in the database.
+
+      operationId: registerAgent
+      parameters:
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentRegistrationRequest'
+      responses:
+        '200':
+          description: Agent registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentRegistrationResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/DuplicateRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/agents/{agent_id}/heartbeat:
+    post:
+      tags:
+        - Agent Lifecycle
+      summary: Send agent heartbeat
+      description: |
+        Send periodic heartbeat to indicate agent is alive and update current state.
+
+        **Frequency:** Should be called every 30-60 seconds.
+        **Timeout:** If heartbeat not received within 120 seconds, agent marked OFFLINE.
+
+      operationId: agentHeartbeat
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatRequest'
+      responses:
+        '200':
+          description: Heartbeat acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/agents/{agent_id}/config:
+    get:
+      tags:
+        - Agent Lifecycle
+      summary: Get agent configuration
+      description: |
+        Retrieve current configuration for the agent including switching settings,
+        replica configuration, and operational parameters.
+
+        **Caching:** Agent should cache config and use config_version for change detection.
+
+      operationId: getAgentConfig
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+      responses:
+        '200':
+          description: Configuration retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentConfigResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # EMERGENCY FLOWS
+  # ============================================================================
+
+  /api/agents/{agent_id}/rebalance-notice:
+    post:
+      tags:
+        - Emergency Flows
+      summary: Report AWS rebalance recommendation
+      description: |
+        Report that AWS has issued a rebalance recommendation for the instance.
+
+        **Timeline:** Best case provides 2-minute window before termination.
+
+        **Actions Triggered:**
+        - Emergency replica creation in fastest-boot pool
+        - Notice status updated to 'rebalance'
+        - UI alert triggered
+
+      operationId: reportRebalanceNotice
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RebalanceNoticeRequest'
+      responses:
+        '200':
+          description: Rebalance notice acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmergencyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/agents/{agent_id}/termination-notice:
+    post:
+      tags:
+        - Emergency Flows
+      summary: Report AWS termination notice
+      description: |
+        Report that AWS has issued a termination notice for the instance.
+
+        **Timeline:** Worst case - immediate termination with minimal warning.
+
+        **Actions Triggered:**
+        - Emergency replica creation if none exists
+        - Immediate promotion if replica ready
+        - Notice status updated to 'termination'
+        - Critical UI alert
+
+        **Target:** Complete failover within 120 seconds.
+
+      operationId: reportTerminationNotice
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TerminationNoticeRequest'
+      responses:
+        '200':
+          description: Termination notice acknowledged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmergencyResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/agents/{agent_id}/emergency-status:
+    get:
+      tags:
+        - Emergency Flows
+      summary: Get emergency status
+      description: |
+        Retrieve current emergency status including notice type, deadline, and replica status.
+
+      operationId: getEmergencyStatus
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+      responses:
+        '200':
+          description: Emergency status retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EmergencyStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # COMMANDS
+  # ============================================================================
+
+  /api/agents/{agent_id}/pending-commands:
+    get:
+      tags:
+        - Commands
+      summary: Get pending commands for agent
+      description: |
+        Retrieve priority-ordered list of pending commands for the agent to execute.
+
+        **Priority Order:**
+        - 100: Critical/Emergency
+        - 75: Manual override
+        - 50: ML urgent
+        - 25: ML normal
+        - 10: Scheduled
+
+      operationId: getPendingCommands
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+      responses:
+        '200':
+          description: Commands retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PendingCommandsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/agents/{agent_id}/commands/{command_id}/executed:
+    post:
+      tags:
+        - Commands
+      summary: Report command execution result
+      description: |
+        Report the result of command execution back to the central server.
+
+        **Idempotency:** Multiple reports with same result are idempotent.
+
+      operationId: reportCommandExecuted
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+        - $ref: '#/components/parameters/CommandID'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommandExecutionReport'
+      responses:
+        '200':
+          description: Execution reported successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ============================================================================
+  # REPORTING
+  # ============================================================================
+
+  /api/agents/{agent_id}/pricing-report:
+    post:
+      tags:
+        - Reporting
+      summary: Submit pricing data report
+      description: |
+        Submit current spot pricing data for all available pools.
+
+        **Frequency:** Every 5 minutes recommended.
+        **Data Flow:** Staging → Consolidation → Canonical
+
+      operationId: submitPricingReport
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PricingReportRequest'
+      responses:
+        '200':
+          description: Pricing report accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/agents/{agent_id}/switch-report:
+    post:
+      tags:
+        - Reporting
+      summary: Report instance switch event
+      description: |
+        Report completion of instance switch with timing metrics.
+
+        **Required Metrics:**
+        - Total duration (seconds)
+        - Downtime (seconds)
+        - Timestamps for each phase
+
+      operationId: submitSwitchReport
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SwitchReportRequest'
+      responses:
+        '200':
+          description: Switch report accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/agents/{agent_id}/cleanup-report:
+    post:
+      tags:
+        - Reporting
+      summary: Report cleanup operation
+      description: |
+        Report results of AMI/snapshot cleanup operation.
+
+      operationId: submitCleanupReport
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CleanupReportRequest'
+      responses:
+        '200':
+          description: Cleanup report accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ============================================================================
+  # DECISION ENGINE
+  # ============================================================================
+
+  /api/agents/{agent_id}/decide:
+    post:
+      tags:
+        - Decision Engine
+      summary: Request ML-based switching decision
+      description: |
+        Submit current state to ML decision engine for switching recommendation.
+
+        **Response Time Target:** <500ms
+        **Confidence Threshold:** Configurable per model (default 0.70)
+
+      operationId: getMLDecision
+      parameters:
+        - $ref: '#/components/parameters/AgentID'
+        - $ref: '#/components/parameters/XRequestID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MLDecisionRequest'
+      responses:
+        '200':
+          description: Decision computed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MLDecisionResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: ML model unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+# ============================================================================
+# COMPONENTS
+# ============================================================================
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Client authentication token
+
+  parameters:
+    AgentID:
+      name: agent_id
+      in: path
+      required: true
+      description: Unique agent identifier (UUID)
+      schema:
+        type: string
+        format: uuid
+      example: "550e8400-e29b-41d4-a716-446655440000"
+
+    CommandID:
+      name: command_id
+      in: path
+      required: true
+      description: Unique command identifier (UUID)
+      schema:
+        type: string
+        format: uuid
+      example: "660e8400-e29b-41d4-a716-446655440001"
+
+    XRequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: Idempotency key for duplicate request prevention (UUID)
+      schema:
+        type: string
+        format: uuid
+      example: "770e8400-e29b-41d4-a716-446655440002"
+
+  schemas:
+    # Registration
+    AgentRegistrationRequest:
+      type: object
+      required:
+        - logical_agent_id
+        - instance_id
+        - instance_type
+        - region
+        - az
+        - mode
+      properties:
+        logical_agent_id:
+          type: string
+          description: Persistent logical identifier for this agent
+          example: "agent-prod-web-1"
+        instance_id:
+          type: string
+          description: AWS EC2 instance ID
+          example: "i-1234567890abcdef0"
+        instance_type:
+          type: string
+          description: EC2 instance type
+          example: "t3.medium"
+        region:
+          type: string
+          description: AWS region
+          example: "us-east-1"
+        az:
+          type: string
+          description: Availability zone
+          example: "us-east-1a"
+        mode:
+          type: string
+          enum: [spot, ondemand]
+          description: Current instance mode
+        hostname:
+          type: string
+          description: Instance hostname
+          example: "prod-web-1"
+        ami_id:
+          type: string
+          description: AMI ID used
+          example: "ami-0c55b159cbfafe1f0"
+        agent_version:
+          type: string
+          description: Agent software version
+          example: "2.1.0"
+        private_ip:
+          type: string
+          description: Private IP address
+          example: "10.0.1.50"
+        public_ip:
+          type: string
+          description: Public IP address
+          example: "54.123.45.67"
+
+    AgentRegistrationResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                agent_id:
+                  type: string
+                  format: uuid
+                client_id:
+                  type: string
+                  format: uuid
+                config:
+                  $ref: '#/components/schemas/AgentConfig'
+
+    # Heartbeat
+    HeartbeatRequest:
+      type: object
+      required:
+        - instance_id
+        - status
+      properties:
+        instance_id:
+          type: string
+        status:
+          type: string
+          enum: [running, stopping, stopped, terminated]
+        current_mode:
+          type: string
+          enum: [spot, ondemand]
+        current_pool_id:
+          type: string
+        spot_price:
+          type: number
+          format: float
+        ondemand_price:
+          type: number
+          format: float
+        metrics:
+          type: object
+          properties:
+            cpu_usage:
+              type: number
+              format: float
+            memory_usage:
+              type: number
+              format: float
+            network_in:
+              type: number
+            network_out:
+              type: number
+
+    HeartbeatResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                acknowledged:
+                  type: boolean
+                config_changed:
+                  type: boolean
+                new_config_version:
+                  type: integer
+
+    # Agent Config
+    AgentConfig:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        auto_switch_enabled:
+          type: boolean
+        auto_terminate_enabled:
+          type: boolean
+        terminate_wait_seconds:
+          type: integer
+        replica_enabled:
+          type: boolean
+        manual_replica_enabled:
+          type: boolean
+        config_version:
+          type: integer
+        min_savings_percent:
+          type: number
+          format: float
+        risk_threshold:
+          type: number
+          format: float
+        max_switches_per_week:
+          type: integer
+
+    AgentConfigResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessResponse'
+        - type: object
+          properties:
+            data:
+              $ref: '#/components/schemas/AgentConfig'
+
+    # Emergency Notices
+    RebalanceNoticeRequest:
+      type: object
+      required:
+        - notice_time
+      properties:
+        notice_time:
+          type: string
+          format: date-time
+          description: Timestamp when rebalance notice was received
+
+    TerminationNoticeRequest:
+      type: object
+      required:
+        - termination_time
+      properties:
+        termination_time:
+          type: string
+          format: date-time
+          description: Expected termination timestamp
+
+    EmergencyResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: "acknowledged"
+                emergency_replica_id:
+                  type: string
+                  format: uuid
+                action:
+                  type: string
+                  example: "emergency_replica_created"
+
+    EmergencyStatusResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                notice_status:
+                  type: string
+                  enum: [none, rebalance, termination]
+                notice_received_at:
+                  type: string
+                  format: date-time
+                notice_deadline:
+                  type: string
+                  format: date-time
+                emergency_replica:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                      format: uuid
+                    status:
+                      type: string
+                      enum: [launching, syncing, ready, promoted]
+                    pool_id:
+                      type: string
+
+    # Commands
+    PendingCommandsResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                commands:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      command_type:
+                        type: string
+                        enum: [switch, terminate, cleanup, rebalance]
+                      priority:
+                        type: integer
+                      target_mode:
+                        type: string
+                      target_pool_id:
+                        type: string
+                      terminate_wait_seconds:
+                        type: integer
+                      created_at:
+                        type: string
+                        format: date-time
+
+    CommandExecutionReport:
+      type: object
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        execution_result:
+          type: object
+        error:
+          type: string
+
+    # Pricing Report
+    PricingReportRequest:
+      type: object
+      required:
+        - instance_id
+        - collected_at
+        - spot_pools
+      properties:
+        instance_id:
+          type: string
+        instance_type:
+          type: string
+        region:
+          type: string
+        az:
+          type: string
+        current_mode:
+          type: string
+        current_pool_id:
+          type: string
+        on_demand_price:
+          type: number
+          format: float
+        current_spot_price:
+          type: number
+          format: float
+        collected_at:
+          type: string
+          format: date-time
+        spot_pools:
+          type: array
+          items:
+            type: object
+            properties:
+              pool_id:
+                type: string
+              price:
+                type: number
+                format: float
+              az:
+                type: string
+
+    # Switch Report
+    SwitchReportRequest:
+      type: object
+      required:
+        - old_instance_id
+        - new_instance_id
+        - success
+      properties:
+        old_instance_id:
+          type: string
+        new_instance_id:
+          type: string
+        success:
+          type: boolean
+        initiated_at:
+          type: string
+          format: date-time
+        ami_created_at:
+          type: string
+          format: date-time
+        instance_launched_at:
+          type: string
+          format: date-time
+        instance_ready_at:
+          type: string
+          format: date-time
+        old_terminated_at:
+          type: string
+          format: date-time
+        total_duration_seconds:
+          type: integer
+        downtime_seconds:
+          type: integer
+        error_message:
+          type: string
+
+    # Cleanup Report
+    CleanupReportRequest:
+      type: object
+      properties:
+        amis_deleted:
+          type: integer
+        snapshots_deleted:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: string
+
+    # ML Decision
+    MLDecisionRequest:
+      type: object
+      required:
+        - pricing_windows
+        - instance_features
+        - group_config
+      properties:
+        pricing_windows:
+          type: array
+          items:
+            type: object
+            properties:
+              pool_id:
+                type: string
+              prices:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    timestamp:
+                      type: string
+                      format: date-time
+                    price:
+                      type: number
+                      format: float
+                    is_interpolated:
+                      type: boolean
+        instance_features:
+          type: object
+          properties:
+            current_role:
+              type: string
+              enum: [PRIMARY, REPLICA]
+            az:
+              type: string
+            instance_type:
+              type: string
+            uptime_hours:
+              type: number
+            cost_delta:
+              type: number
+        group_config:
+          type: object
+          properties:
+            auto_switching:
+              type: boolean
+            manual_replica:
+              type: boolean
+            auto_terminate:
+              type: boolean
+
+    MLDecisionResponse:
+      allOf:
+        - $ref: '#/components/schemas/SuccessResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                action:
+                  type: string
+                  example: "SWITCH_TO_pool-123"
+                confidence:
+                  type: number
+                  format: float
+                  minimum: 0
+                  maximum: 1
+                reasoning:
+                  type: string
+                target_pool_id:
+                  type: string
+
+    # Standard Responses
+    SuccessResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "success"
+        data:
+          type: object
+
+    ErrorResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "error"
+        error:
+          type: string
+        error_code:
+          type: string
+        details:
+          type: object
+
+  responses:
+    Unauthorized:
+      description: Authentication failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: "error"
+            error: "Invalid client token"
+            error_code: "INVALID_TOKEN"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: "error"
+            error: "Agent not found"
+            error_code: "NOT_FOUND"
+
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: "error"
+            error: "Validation failed"
+            error_code: "VALIDATION_ERROR"
+            details:
+              instance_id: ["This field is required"]
+
+    DuplicateRequest:
+      description: Duplicate request detected (idempotency conflict)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: "error"
+            error: "Request already in progress"
+            error_code: "DUPLICATE_REQUEST"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            status: "error"
+            error: "An unexpected error occurred"
+            error_code: "INTERNAL_ERROR"

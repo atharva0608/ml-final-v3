@@ -1,0 +1,80 @@
+# Prometheus Configuration for AWS Spot Optimizer v6.0
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'spot-optimizer'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - localhost:9093
+
+# Load rules
+rule_files:
+  - "alert_rules.yml"
+  - "recording_rules.yml"
+
+# Scrape configurations
+scrape_configs:
+  # ============================================================================
+  # Backend API Server Metrics
+  # ============================================================================
+  - job_name: 'spot-optimizer-backend'
+    static_configs:
+      - targets: ['localhost:5000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+    honor_labels: true
+
+  # ============================================================================
+  # MySQL Database Metrics (via mysqld_exporter)
+  # ============================================================================
+  - job_name: 'mysql'
+    static_configs:
+      - targets: ['localhost:9104']
+    scrape_interval: 15s
+
+  # ============================================================================
+  # Node Exporter (System Metrics)
+  # ============================================================================
+  - job_name: 'node'
+    static_configs:
+      - targets: ['localhost:9100']
+    scrape_interval: 15s
+
+  # ============================================================================
+  # Python Application Metrics (via prometheus_client)
+  # ============================================================================
+  - job_name: 'spot-optimizer-app'
+    static_configs:
+      - targets: ['localhost:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 10s
+
+  # ============================================================================
+  # Custom Business Metrics (from database)
+  # ============================================================================
+  - job_name: 'spot-optimizer-business-metrics'
+    static_configs:
+      - targets: ['localhost:9999']
+    metrics_path: '/business-metrics'
+    scrape_interval: 60s  # Less frequent for DB queries
+
+# Remote write configuration (optional - for long-term storage)
+# remote_write:
+#   - url: "https://prometheus-remote-storage.example.com/write"
+#     basic_auth:
+#       username: "prometheus"
+#       password: "secret"
+
+# Remote read configuration (optional)
+# remote_read:
+#   - url: "https://prometheus-remote-storage.example.com/read"
+#     basic_auth:
+#       username: "prometheus"
+#       password: "secret"
