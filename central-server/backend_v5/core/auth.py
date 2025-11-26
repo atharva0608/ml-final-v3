@@ -38,7 +38,12 @@ def require_admin_auth(f):
 
 
 def require_client_auth(f):
-    """Decorator to require client authentication for endpoint access."""
+    """
+    Decorator to require client authentication for endpoint access.
+
+    Injects authenticated_client_id into kwargs and also sets request.client_id
+    for backward compatibility with legacy code.
+    """
     @wraps(f)
     def decorated_function(*args, **kwargs):
         auth_header = request.headers.get('Authorization')
@@ -65,7 +70,12 @@ def require_client_auth(f):
         if client['status'] != 'active':
             return jsonify(*error_response("Client account is not active", "INACTIVE_CLIENT", 403))
 
+        # Inject into kwargs for new code
         kwargs['authenticated_client_id'] = client['id']
+
+        # Also set on request object for legacy code compatibility
+        request.client_id = client['id']
+        request.client_name = client['name']
 
         return f(*args, **kwargs)
 
