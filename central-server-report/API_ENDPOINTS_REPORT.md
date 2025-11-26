@@ -1757,3 +1757,173 @@ WHERE id = client_id
 - **Unused**: 2 endpoints (3% of total)
 
 All endpoints are RESTful, JSON-based, and follow consistent error handling patterns. Emergency endpoints prioritize safety over configuration.
+
+---
+
+# Missing & Recommended Endpoints
+
+## Summary of Missing Functionality
+
+**Analysis Date:** 2025-11-26
+
+The frontend currently has **5 mock methods** returning placeholder data, and there are **7 additional recommended endpoints** that would enhance functionality based on user requirements.
+
+### Quick Overview:
+
+| Category | Count | Priority |
+|----------|-------|----------|
+| Mock Methods (need backend) | 5 | High/Medium |
+| Recommended New Endpoints | 7 | High/Medium/Low |
+| **Total Missing/Recommended** | **12** | - |
+
+---
+
+## Currently Mock Methods (Need Backend Implementation)
+
+These exist in the frontend but return empty/mock data:
+
+### 1. ⚠️ `GET /api/admin/search` - Global Search
+**Frontend Method:** `globalSearch(query)`
+**Status:** Returns `{ clients: [], instances: [], agents: [] }`
+**Priority:** Medium
+**Use Case:** Search across all clients, instances, and agents from admin panel
+
+### 2. ⚠️ `GET /api/agents/{agent_id}/statistics` - Agent Statistics  
+**Frontend Method:** `getAgentStatistics(agentId)`
+**Status:** Returns `{ totalDecisions: 0, successRate: 0 }`
+**Priority:** High
+**Use Case:** Display ML decision statistics, success rates, confidence scores
+
+### 3. ⚠️ `GET /api/client/instances/{instance_id}/logs` - Instance Logs
+**Frontend Method:** `getInstanceLogs(instanceId, limit)`
+**Status:** Returns `[]`
+**Priority:** High
+**Use Case:** Debug instance lifecycle events, switch operations, termination notices
+
+### 4. ⚠️ `GET /api/admin/pools/statistics` - Pool Statistics
+**Frontend Method:** `getPoolStatistics()`
+**Status:** Returns `{ total: 0, active: 0, regions: [] }`
+**Priority:** Medium
+**Use Case:** Admin overview of spot pool availability and pricing by region
+
+### 5. ⚠️ `GET /api/admin/agents/health-summary` - Agent Health Summary
+**Frontend Method:** `getAgentHealth()`
+**Status:** Returns `{ online: 0, offline: 0, total: 0 }`
+**Priority:** Medium
+**Use Case:** Aggregated agent health metrics for monitoring dashboard
+
+---
+
+## Recommended New Endpoints (From User Requirements)
+
+### 6. 💡 `GET /api/events/stream` - Real-Time Event Stream (SSE)
+**Priority:** High
+**Use Case:** Real-time instance status, agent connectivity, switch progress updates
+**Benefit:** Eliminates polling, instant UI updates
+**Note:** Mentioned in user requirements for "event streams/websocket mechanisms"
+
+### 7. 💡 `GET /api/client/{client_id}/analytics/downtime` - Downtime Analytics
+**Priority:** Medium
+**Use Case:** Detailed downtime analysis per trigger type (automatic, manual, emergency)
+**Benefit:** SLA tracking, performance optimization
+
+### 8. 💡 `GET /api/client/instances/{instance_id}/pool-volatility` - Pool Volatility
+**Priority:** High
+**Use Case:** Show volatility and stability indicators in "Manage Instances" modal
+**Benefit:** Informed manual switching decisions
+**Note:** User requirements mention "volatility or stability indicator"
+
+### 9. 💡 `GET /api/agents/{agent_id}/emergency-status` - Emergency Mode Status
+**Priority:** Medium
+**Use Case:** Display if agent is in emergency/rebalance-only mode
+**Benefit:** Better visibility into agent operational state
+
+### 10. 💡 `POST /api/client/instances/{instance_id}/simulate-switch` - Switch Simulation
+**Priority:** Medium
+**Use Case:** Preview expected savings, downtime before manual switch
+**Benefit:** Helps users make informed decisions
+
+### 11. 💡 `POST /api/admin/bulk/execute` - Bulk Operations
+**Priority:** Low
+**Use Case:** Delete multiple agents, batch operations
+**Benefit:** Admin convenience
+
+### 12. 💡 `POST /api/client/{client_id}/pricing-alerts` - Pricing Alerts
+**Priority:** Low
+**Use Case:** Configure notifications for price spikes
+**Benefit:** Proactive cost management
+
+---
+
+## Implementation Priority
+
+### 🔴 Phase 1: Critical (High Priority) - 4 Endpoints
+1. `GET /api/agents/{agent_id}/statistics` - Agent decision statistics
+2. `GET /api/client/instances/{instance_id}/logs` - Instance event logs
+3. `GET /api/client/instances/{instance_id}/pool-volatility` - Pool stability indicators
+4. `GET /api/events/stream` - Real-time SSE event stream
+
+**Impact:** Enables core debugging, provides critical insights, improves real-time UX
+
+### 🟡 Phase 2: Enhanced (Medium Priority) - 6 Endpoints
+5. `GET /api/admin/search` - Global search
+6. `GET /api/admin/pools/statistics` - Pool statistics
+7. `GET /api/admin/agents/health-summary` - Agent health aggregation
+8. `GET /api/client/{client_id}/analytics/downtime` - Downtime analysis
+9. `GET /api/agents/{agent_id}/emergency-status` - Emergency mode visibility
+10. `POST /api/client/instances/{instance_id}/simulate-switch` - Switch simulation
+
+**Impact:** Better monitoring, informed decisions, enhanced admin capabilities
+
+### 🟢 Phase 3: Nice-to-Have (Low Priority) - 2 Endpoints
+11. `POST /api/admin/bulk/execute` - Bulk operations
+12. `POST /api/client/{client_id}/pricing-alerts` - Alert configuration
+
+**Impact:** Convenience features, future automation
+
+---
+
+## Database Schema Additions Needed
+
+To support these endpoints, consider adding:
+
+1. **`instance_event_logs`** table
+   - Stores lifecycle events (switches, terminations, notices)
+   - Enables `/api/client/instances/{instance_id}/logs`
+
+2. **`agent_decision_statistics`** materialized view
+   - Aggregates decision metrics per agent
+   - Enables `/api/agents/{agent_id}/statistics`
+
+3. **`pricing_alerts`** table
+   - Stores alert configurations
+   - Enables `/api/client/{client_id}/pricing-alerts`
+
+---
+
+## Frontend Components Waiting for Backends
+
+| Component | Needs Endpoint | Current Status |
+|-----------|----------------|----------------|
+| SearchResultsPanel | `/api/admin/search` | Shows "Not implemented" |
+| Instance Detail Panel | `/api/client/instances/{id}/logs` | Limited debugging |
+| Manage Instances Modal | `/api/client/instances/{id}/pool-volatility` | Missing stability indicators |
+| Agent Cards | `/api/agents/{id}/statistics` | No decision stats shown |
+| Live Updates | `/api/events/stream` | Uses polling (inefficient) |
+| System Health Page | `/api/admin/pools/statistics` | Missing pool overview |
+
+---
+
+## Quick Implementation Guide
+
+See `MISSING_ENDPOINTS_ANALYSIS.md` for:
+- Complete request/response examples
+- Database schema suggestions
+- Implementation checklist
+- Frontend integration notes
+
+---
+
+**For complete details on all missing endpoints, see:**
+`central-server-report/MISSING_ENDPOINTS_ANALYSIS.md`
+
