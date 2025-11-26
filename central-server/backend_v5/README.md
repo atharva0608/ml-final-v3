@@ -1,57 +1,112 @@
-# AWS Spot Optimizer - Backend v5.0 (Modular Architecture)
+# AWS Spot Optimizer - Backend v6.0 (Production-Grade)
 
-**Production-grade central server with clean modular architecture**
+**Complete rewrite aligned with operational runbook requirements**
 
-## 📁 Project Structure
+## 🎯 Overview
+
+This is a production-grade central server for AWS Spot Instance optimization with ML-driven decision making, emergency handling, and strict consistency guarantees. The system manages PRIMARY/REPLICA/ZOMBIE instance lifecycle with real-time monitoring and comprehensive data pipelines.
+
+### Key Features
+
+✅ **Three-Tier Instance State Machine** - PRIMARY/REPLICA/ZOMBIE/TERMINATED with atomic transitions
+✅ **Emergency Flow Orchestration** - Rebalance (2-min) and termination (immediate) notice handling
+✅ **Optimistic Locking** - Concurrent-safe state changes with version control
+✅ **Idempotency Support** - Request ID-based duplicate prevention
+✅ **Three-Tier Data Pipeline** - Staging → Consolidated → Canonical
+✅ **ML Model Interface** - Pluggable decision engine with validation
+✅ **Comprehensive Audit Trails** - Pre/post state tracking with user attribution
+✅ **Real-Time Metrics** - Downtime analytics, emergency events, consolidation jobs
+
+---
+
+## 📁 Architecture
 
 ```
 backend_v5/
-├── backend.py              # Main application entry point
-├── requirements.txt        # Python dependencies
-├── .env.example           # Environment variables template
-├── config/                # Configuration module
+├── backend.py                    # Main application entry point
+├── requirements.txt              # Python dependencies
+├── .env.example                  # Environment variables template
+│
+├── config/                       # Configuration
 │   ├── __init__.py
-│   └── settings.py        # All environment settings
-├── core/                  # Core functionality
+│   └── settings.py               # All environment settings
+│
+├── core/                         # Core Infrastructure
 │   ├── __init__.py
-│   ├── database.py        # MySQL connection pool & query execution
-│   ├── auth.py            # Authentication decorators
-│   └── utils.py           # Utility functions (validation, formatting, etc.)
-├── routes/                # API endpoint modules (12 modules)
-│   ├── __init__.py        # Route registration
-│   ├── health.py          # Health check (1 endpoint)
-│   ├── admin.py           # Admin operations (14 endpoints)
-│   ├── clients.py         # Client management (3 endpoints)
-│   ├── agents.py          # Agent operations (12 endpoints)
-│   ├── instances.py       # Instance management (9 endpoints)
-│   ├── replicas.py        # Replica operations (1 endpoint)
-│   ├── emergency.py       # Emergency handling (placeholder)
-│   ├── decisions.py       # ML/Decision engine (5 endpoints)
-│   ├── commands.py        # Command orchestration (2 endpoints)
-│   ├── reporting.py       # Telemetry & reporting (4 endpoints)
-│   ├── analytics.py       # Analytics & exports (6 endpoints)
-│   └── notifications.py   # Notifications (3 endpoints)
-└── models/                # Data models (future expansion)
+│   ├── database.py               # Connection pool + optimistic locking
+│   ├── auth.py                   # Authentication decorators
+│   ├── utils.py                  # Utility functions
+│   ├── validation.py             # Marshmallow schemas
+│   ├── idempotency.py           # ⭐ NEW: Request ID duplicate prevention
+│   ├── emergency.py             # ⭐ NEW: Emergency flow orchestration
+│   └── ml_interface.py          # ⭐ NEW: ML model integration
+│
+├── routes/                       # API Endpoints (12 modules, 78 endpoints)
+│   ├── __init__.py
+│   ├── health.py                 # Health check
+│   ├── admin.py                  # Admin operations
+│   ├── clients.py                # Client management
+│   ├── agents.py                 # Agent operations
+│   ├── instances.py              # Instance management
+│   ├── replicas.py               # Replica operations
+│   ├── emergency.py              # Emergency handling
+│   ├── decisions.py              # ML/Decision engine
+│   ├── commands.py               # Command orchestration
+│   ├── reporting.py              # Telemetry & reporting
+│   ├── analytics.py              # Analytics & exports
+│   └── notifications.py          # Notifications
+│
+├── jobs/                         # ⭐ NEW: Background Jobs
+│   ├── __init__.py
+│   └── pricing_consolidation.py # 12-hour data pipeline
+│
+├── database/                     # ⭐ NEW: Database Schema
+│   └── schema.sql                # Complete v6.0 schema
+│
+├── frontend/                     # ⭐ NEW: Frontend Components
+│   └── src/
+│       ├── services/
+│       │   └── apiClient.js      # Complete API client
+│       ├── components/
+│       │   ├── cards/
+│       │   │   └── DowntimeCard.jsx
+│       │   └── emergency/
+│       │       └── EmergencyEventAlert.jsx
+│       └── config/
+│
+└── OPERATIONAL_RUNBOOK_IMPLEMENTATION.md  # Full implementation guide
 ```
+
+---
 
 ## 🚀 Quick Start
 
 ### 1. Installation
 
 ```bash
-cd /path/to/central-server/backend_v5
+cd central-server/backend_v5
 
 # Install dependencies
 pip install -r requirements.txt
 
 # Create environment file
 cp .env.example .env
-# Edit .env with your database credentials and settings
+# Edit .env with your database credentials
 ```
 
-### 2. Configure Environment
+### 2. Database Setup
 
-Edit `.env` file:
+```bash
+# Create database
+mysql -u root -p -e "CREATE DATABASE spot_optimizer CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# Import schema
+mysql -u root -p spot_optimizer < database/schema.sql
+```
+
+### 3. Configure Environment
+
+Edit `.env`:
 
 ```bash
 # Database
@@ -69,7 +124,7 @@ FLASK_DEBUG=False
 LOG_LEVEL=INFO
 ```
 
-### 3. Run the Server
+### 4. Run the Server
 
 ```bash
 # Development
@@ -79,207 +134,256 @@ python backend.py
 gunicorn -w 4 -b 0.0.0.0:5000 backend:app
 ```
 
-### 4. Verify Installation
+### 5. Verify Installation
 
 ```bash
 curl http://localhost:5000/
 curl http://localhost:5000/health
 ```
 
-## 📊 Complete API Endpoints (78 Total)
+---
 
-### Health & Root (2 endpoints)
-- `GET /` - API information and status
-- `GET /health` - Health check
+## 🔥 What's New in v6.0
 
-### Admin Operations (14 endpoints)
-- `POST /api/admin/clients/create` - Create new client
-- `DELETE /api/admin/clients/<id>` - Delete client
-- `POST /api/admin/clients/<id>/regenerate-token` - Regenerate token
-- `GET /api/admin/clients/<id>/token` - Get client token
-- `GET /api/admin/stats` - Global statistics
-- `GET /api/admin/clients` - List all clients
-- `GET /api/admin/clients/growth` - Client growth data
-- `GET /api/admin/instances` - All instances (global)
-- `GET /api/admin/agents` - All agents (global)
-- `GET /api/admin/activity` - System activity log
-- `GET /api/admin/system-health` - System health metrics
-- `GET /api/admin/search` - Global search
-- `GET /api/admin/pools/statistics` - Pool statistics
-- `GET /api/admin/agents/health-summary` - Agent health summary
+### Database (Complete Rewrite)
 
-### Client Management (3 endpoints)
-- `GET /api/client/validate` - Validate client token
-- `GET /api/client/<id>` - Get client details
-- `GET /api/client/<id>/agents` - Get client's agents
+**Three-Tier Pricing Architecture:**
+- **Staging** (`spot_price_snapshots`) - Raw data from agents
+- **Consolidated** (`pricing_consolidated`) - Deduplicated & interpolated
+- **Canonical** (`pricing_canonical`) - ML training data with lifecycle features
 
-### Agent Operations (12 endpoints)
-- `POST /api/agents/register` - Register new agent
-- `POST /api/agents/<id>/heartbeat` - Agent heartbeat
-- `GET /api/agents/<id>/config` - Get agent configuration
-- `GET /api/agents/<id>/instances-to-terminate` - Get termination list
-- `POST /api/agents/<id>/termination-report` - Report termination
-- `POST /api/agents/<id>/rebalance-recommendation` - Handle rebalance
-- `GET /api/agents/<id>/replica-config` - Get replica config
-- `POST /api/agents/<id>/decide` - Get switching decision
-- `GET /api/agents/<id>/switch-recommendation` - Get recommendation
-- `POST /api/agents/<id>/issue-switch-command` - Issue switch command
-- `GET /api/agents/<id>/statistics` - Agent statistics
-- `GET /api/agents/<id>/emergency-status` - Emergency status
+**Concurrency Control:**
+- Optimistic locking with `version` columns
+- Triggers auto-increment version on UPDATE
+- Stored procedure `promote_instance_to_primary()` for atomic role changes
 
-### Instance Management (9 endpoints)
-- `GET /api/client/<client_id>/instances` - List instances
-- `GET /api/client/instances/<id>/pricing` - Get pricing
-- `GET /api/client/instances/<id>/metrics` - Get metrics
-- `GET /api/client/instances/<id>/price-history` - Price history
-- `GET /api/client/instances/<id>/available-options` - Available pools
-- `POST /api/client/instances/<id>/force-switch` - Force switch
-- `GET /api/client/instances/<id>/logs` - Instance logs
-- `GET /api/client/instances/<id>/pool-volatility` - Pool volatility
-- `POST /api/client/instances/<id>/simulate-switch` - Simulate switch
+**Idempotency:**
+- `request_id` column in commands, switches, replicas
+- Unique constraints prevent duplicate executions
+- Cached results for retries
 
-### Replica Operations (1 endpoint)
-- `GET /api/client/<id>/replicas` - List replicas
+**Emergency Tracking:**
+- `notice_status` ENUM ('none', 'rebalance', 'termination')
+- `notice_deadline`, `fastest_boot_pool_id` fields
+- Emergency replica tracking with boot time metrics
 
-### Decision Engine & ML (5 endpoints)
-- `POST /api/admin/decision-engine/upload` - Upload engine
-- `POST /api/admin/ml-models/upload` - Upload ML models
-- `POST /api/admin/ml-models/activate` - Activate models
-- `POST /api/admin/ml-models/fallback` - Fallback to previous
-- `GET /api/admin/ml-models/sessions` - List model sessions
+**ML Model Interface:**
+- `ml_models` table - Model registry with activation
+- `ml_decisions` table - Decision log with execution tracking
+- `ml_training_datasets` table - Dataset management
 
-### Commands (2 endpoints)
-- `GET /api/agents/<id>/pending-commands` - Get pending commands
-- `POST /api/agents/<id>/commands/<id>/executed` - Report execution
+**Audit Fields:**
+- `pre_state` and `post_state` JSON columns
+- `user_id` for manual actions
+- `lifecycle_event_type` for polymorphic events
 
-### Reporting & Telemetry (4 endpoints)
-- `POST /api/agents/<id>/pricing-report` - Report pricing data
-- `POST /api/agents/<id>/switch-report` - Report switch event
-- `POST /api/agents/<id>/termination` - Report termination
-- `POST /api/agents/<id>/cleanup-report` - Report cleanup
+### Core Modules
 
-### Analytics & Exports (6 endpoints)
-- `GET /api/client/<id>/savings` - Savings data
-- `GET /api/client/<id>/switch-history` - Switch history
-- `GET /api/client/<id>/export/savings` - Export savings CSV
-- `GET /api/client/<id>/export/switch-history` - Export history CSV
-- `GET /api/admin/export/global-stats` - Export global stats
-- `GET /api/client/<id>/stats/charts` - Chart data
+**core/idempotency.py:**
+```python
+@require_idempotency_key  # Decorator for endpoints
+def my_endpoint():
+    request_id = request.request_id  # Access idempotency key
+    ...
+```
 
-### Notifications (3 endpoints)
-- `GET /api/notifications` - Get notifications
-- `POST /api/notifications/<id>/mark-read` - Mark as read
-- `POST /api/notifications/mark-all-read` - Mark all as read
+**core/emergency.py:**
+- `handle_rebalance_notice()` - 2-minute window handling
+- `handle_termination_notice()` - Immediate failover
+- `create_emergency_replica()` - Fastest pool selection
+- `promote_replica()` - Atomic promotion with health check
 
-### Advanced Features (3 endpoints)
-- `GET /api/client/<id>/analytics/downtime` - Downtime analytics
-- `POST /api/admin/bulk/execute` - Bulk operations
-- `POST /api/client/<id>/pricing-alerts` - Pricing alerts
+**core/ml_interface.py:**
+- `invoke_ml_decision()` - ML engine invocation with validation
+- `register_ml_model()` - Add model to registry
+- `activate_ml_model()` - Activate for production
+- `get_model_performance_metrics()` - Monitor model performance
 
-### Real-Time (1 endpoint)
-- `GET /api/events/stream` - Server-Sent Events stream
+**core/database.py Enhancements:**
+- `execute_with_optimistic_lock()` - Version-based updates
+- `execute_transaction()` - Multi-operation atomicity
+- `call_stored_procedure()` - Database procedures
 
-## 🏗️ Architecture Overview
+### Background Jobs
 
-### Modular Design Benefits
+**jobs/pricing_consolidation.py:**
+- Runs every 12 hours via APScheduler
+- Deduplicates pricing (PRIMARY precedence over REPLICA)
+- Interpolates gaps (linear interpolation)
+- Integrates backfilled data from cloud API
+- Updates canonical layer for ML training
 
-**Before (Monolithic):**
-- Single file: 8,930 lines
-- Hard to navigate and maintain
-- Mixed concerns in one file
+### Frontend Components
 
-**After (Modular):**
-- 20 organized files
-- Clear separation of concerns
-- Easy to find and modify code
-- Better testability
+**components/cards/DowntimeCard.jsx:**
+- Switch downtime analytics with p95, avg, min, max
+- 24-hour rolling window
+- Success rate tracking
+- Trend indicators
 
-### Module Responsibilities
+**components/emergency/EmergencyEventAlert.jsx:**
+- Real-time emergency event display
+- Countdown timer for termination
+- Emergency replica status
+- Action timeline
 
-**config/** - Configuration Management
-- Environment variables
-- Application settings
-- Path management
-- Feature flags
+**services/apiClient.js:**
+- Complete API client with all 78 endpoints
+- Idempotency key generation
+- Emergency flow endpoints
+- Operational metrics endpoints
 
-**core/** - Core Infrastructure
-- `database.py` - Connection pooling, query execution
-- `auth.py` - Authentication decorators for admin and clients
-- `utils.py` - Validation, formatting, error responses
+---
 
-**routes/** - API Endpoints
-- Each file handles a specific domain (agents, instances, etc.)
-- Uses Flask Blueprints for modularity
-- Complete isolation between modules
+## 📊 Database Schema Highlights
+
+### Instance State Machine
+
+```
+PRIMARY → (on failover) → ZOMBIE
+   ↓
+REPLICA → (promoted) → PRIMARY
+```
+
+**Invariants:**
+- Exactly one PRIMARY per agent (enforced by stored procedure)
+- Manual replica mode and auto-switch are mutually exclusive
+- New agent installation always generates new agent_id
+
+### Pricing Data Flow
+
+```
+Agents → spot_price_snapshots (Staging)
+           ↓ (12-hour job)
+       pricing_consolidated (Deduplicated + Interpolated)
+           ↓
+       pricing_canonical (ML Training with Lifecycle Features)
+```
+
+---
 
 ## 🔐 Security Features
 
 ### Authentication
-- **Admin endpoints**: Require `Authorization: Bearer <admin_token>`
-- **Client endpoints**: Require `Authorization: Bearer <client_token>`
-- **Token validation**: Database lookup for client tokens
+
+- **Admin endpoints**: `Authorization: Bearer <admin_token>`
+- **Client endpoints**: `Authorization: Bearer <client_token>`
+- **Token validation**: Database lookup with status check
 
 ### Security Best Practices
+
 - SQL injection protection (parameterized queries)
-- Input validation on all endpoints
+- Input validation (Marshmallow schemas)
 - CORS configuration
-- Password/token hashing (where applicable)
-- Secure token generation (cryptographically random)
+- Optimistic locking for race conditions
+- Idempotency for retry safety
+- Comprehensive audit logging
 
-## 📝 Database Schema
+---
 
-**Required MySQL version**: 8.0+
+## 📝 API Endpoints (78 Total)
 
-**Main Tables:**
-- `clients` - Client accounts
-- `agents` - Monitoring agents
-- `instances` - EC2 instances
-- `switches` - Switch events history
-- `replicas` - Replica instances
-- `commands` - Command queue
-- `notifications` - User notifications
-- `spot_pricing_history` - Pricing data
-- `system_events` - System event log
+### Emergency Flow (NEW)
+- `POST /api/agents/<id>/rebalance-notice` - Report rebalance recommendation
+- `POST /api/agents/<id>/termination-notice` - Report termination notice
+- `GET /api/agents/<id>/emergency-status` - Get emergency status
+
+### Operational Metrics (NEW)
+- `GET /api/admin/metrics/operational` - Operational dashboard metrics
+- `GET /api/admin/consolidation-jobs` - Data consolidation job status
+- `GET /api/admin/emergency-events` - Emergency event summary
+- `GET /api/client/<id>/analytics/downtime` - Downtime analytics
+
+### ML Model Interface (NEW)
+- `POST /api/admin/ml-models/upload` - Upload ML model
+- `POST /api/admin/ml-models/activate` - Activate model
+- `GET /api/admin/ml-models/sessions` - List model sessions
+
+### Existing Endpoints (All Preserved)
+- Health & Root (2)
+- Admin Operations (14)
+- Client Management (3)
+- Agent Operations (12)
+- Instance Management (9)
+- Replica Operations (1)
+- Decision Engine (5)
+- Commands (2)
+- Reporting & Telemetry (4)
+- Analytics & Exports (6)
+- Notifications (3)
+- Advanced Features (3)
+- Real-Time (1)
+
+---
 
 ## 🧪 Testing
 
-### Test Health Endpoint
+### Test Emergency Flow
+
 ```bash
-curl http://localhost:5000/health
+# Simulate rebalance notice
+curl -X POST http://localhost:5000/api/agents/<agent_id>/rebalance-notice \
+  -H "Authorization: Bearer <client_token>" \
+  -H "Content-Type: application/json" \
+  -H "X-Request-ID: $(uuidgen)" \
+  -d '{"notice_time": "2024-11-26T12:00:00"}'
+
+# Check emergency status
+curl http://localhost:5000/api/agents/<agent_id>/emergency-status \
+  -H "Authorization: Bearer <client_token>"
 ```
 
-Expected response:
-```json
-{
-  "status": "success",
-  "data": {
-    "status": "healthy",
-    "timestamp": "2024-11-26T10:00:00",
-    "database": "connected"
-  }
-}
+### Test Idempotency
+
+```bash
+# First request
+curl -X POST http://localhost:5000/api/agents/<agent_id>/issue-switch-command \
+  -H "Authorization: Bearer <client_token>" \
+  -H "X-Request-ID: test-idempotency-123" \
+  -d '{"target_pool": "pool-123"}'
+
+# Retry with same request ID (should return cached result)
+curl -X POST http://localhost:5000/api/agents/<agent_id>/issue-switch-command \
+  -H "Authorization: Bearer <client_token>" \
+  -H "X-Request-ID: test-idempotency-123" \
+  -d '{"target_pool": "pool-123"}'
 ```
 
-### Test Admin Endpoint
-```bash
-curl -H "Authorization: Bearer your-admin-token" \
-  http://localhost:5000/api/admin/stats
+### Test Optimistic Locking
+
+```python
+# Concurrent updates will be serialized
+from core.database import execute_with_optimistic_lock
+
+# Get current version
+instance = execute_query("SELECT version FROM instances WHERE id = %s", (instance_id,), fetch_one=True)
+
+# Try to update with version check
+success = execute_with_optimistic_lock(
+    'instances',
+    instance_id,
+    "UPDATE instances SET status = %s WHERE id = %s",
+    ('running_primary', instance_id),
+    instance['version']
+)
+
+if not success:
+    # Version conflict - retry or abort
+    pass
 ```
 
-### Test Client Endpoint
-```bash
-curl -H "Authorization: Bearer client-token" \
-  http://localhost:5000/api/client/client-id
-```
+---
 
 ## 🐛 Debugging
 
 ### Enable Debug Logging
+
 ```bash
 LOG_LEVEL=DEBUG python backend.py
 ```
 
 ### Check Logs
+
 ```bash
 tail -f logs/backend_v5.log    # All logs
 tail -f logs/error.log          # Errors only
@@ -290,17 +394,18 @@ tail -f logs/error.log          # Errors only
 **Database Connection Fails:**
 - Check MySQL is running: `mysql -u root -p`
 - Verify credentials in `.env`
-- Check `DB_HOST` and `DB_PORT`
 
-**Authentication Failures:**
-- Verify token in Authorization header
-- Check token format: `Bearer <token>`
-- Confirm client/admin token matches `.env`
+**Optimistic Lock Conflicts:**
+- Normal under high concurrency
+- Check logs for conflict patterns
+- May need to increase retry logic
 
-**Module Import Errors:**
-- Ensure all `__init__.py` files exist
-- Check Python path: `sys.path` includes backend_v5
-- Verify dependencies: `pip install -r requirements.txt`
+**Emergency Replica Not Created:**
+- Check `fastest_boot_pool_id` is set
+- Verify sufficient capacity in pools
+- Review `consolidation_jobs` table
+
+---
 
 ## 🚀 Deployment
 
@@ -308,15 +413,17 @@ tail -f logs/error.log          # Errors only
 
 - [ ] Set `FLASK_ENV=production`
 - [ ] Set `FLASK_DEBUG=False`
-- [ ] Use strong `ADMIN_TOKEN`
+- [ ] Use strong `ADMIN_TOKEN` (64+ chars)
 - [ ] Configure `CORS_ORIGINS` to specific domains
 - [ ] Set up database backups
 - [ ] Configure log rotation
 - [ ] Use HTTPS (reverse proxy with nginx)
 - [ ] Set up monitoring (health check endpoint)
-- [ ] Configure gunicorn workers appropriately
+- [ ] Configure gunicorn workers (4-8 workers)
+- [ ] Set up APScheduler for consolidation jobs
 
 ### Gunicorn Configuration
+
 ```bash
 gunicorn -w 4 \
   -b 0.0.0.0:5000 \
@@ -327,9 +434,10 @@ gunicorn -w 4 \
 ```
 
 ### Systemd Service
+
 ```ini
 [Unit]
-Description=AWS Spot Optimizer Backend v5
+Description=AWS Spot Optimizer Backend v6.0
 After=network.target mysql.service
 
 [Service]
@@ -344,30 +452,42 @@ Restart=always
 WantedBy=multi-user.target
 ```
 
-## 📈 Performance
+---
 
-### Connection Pooling
-- Default pool size: 10 connections
-- Automatic reconnection on failure
-- Connection recycling after use
+## 📈 Success Criteria
 
-### Optimization Tips
-- Increase `DB_POOL_SIZE` for high traffic
-- Use caching for frequently accessed data
-- Enable query result caching where appropriate
-- Monitor slow queries and add indexes
+| Metric | Target | Status |
+|--------|--------|--------|
+| Agent heartbeat miss rate | <5% | ✅ Monitored via v_agent_health_summary |
+| Manual switch downtime (p95) | <10s | ✅ Tracked in switches.downtime_seconds |
+| Emergency promotion window | 99% within 2min | ⏳ Requires deployment metrics |
+| Pricing chart update latency | <30s | ⏳ Requires SSE integration |
+| ML decision latency | <500ms | ⏳ Requires ML model deployment |
+| Zombie cleanup | 30-day auto | ⏳ Requires scheduled job |
+
+---
+
+## 📚 Documentation
+
+- **OPERATIONAL_RUNBOOK_IMPLEMENTATION.md** - Complete implementation guide
+- **routes/AGENTS_DOCUMENTATION.md** - Agent endpoints documentation
+- **database/schema.sql** - Complete database schema with comments
+- **frontend/src/services/apiClient.js** - API client reference
+
+---
 
 ## 🔄 Migration from Old Backend
 
-If migrating from the monolithic `backend.py`:
+If migrating from monolithic `backend.py`:
 
-1. **Database Schema**: No changes required (100% compatible)
+1. **Database Schema**: Import `database/schema.sql` (adds new tables, preserves old)
 2. **Environment Variables**: Same variables, copy from old `.env`
-3. **API Endpoints**: All endpoints preserved with same paths
-4. **Agents**: No changes required, agents work without modification
-5. **Frontend**: No changes required, API contract maintained
+3. **API Endpoints**: All endpoints preserved (+ 15 new emergency/metrics endpoints)
+4. **Agents**: No changes required on agent side
+5. **Frontend**: Update API client to use new endpoints
 
 ### Side-by-Side Testing
+
 ```bash
 # Run old backend on port 5000
 python backend/backend.py
@@ -376,47 +496,45 @@ python backend/backend.py
 FLASK_PORT=5001 python backend_v5/backend.py
 ```
 
-## 📚 API Documentation
-
-For complete API documentation with request/response examples, see:
-- Frontend integration: Check `apiClient.jsx` in frontend
-- Postman collection: Available in `/docs` folder
-- OpenAPI spec: Coming soon
+---
 
 ## 🤝 Contributing
 
 ### Adding a New Endpoint
 
-1. **Choose the appropriate route module** (or create new one)
-2. **Add the endpoint**:
+1. Choose appropriate route module (or create new)
+2. Add endpoint with decorators:
+
 ```python
+from core.idempotency import require_idempotency_key
+
 @module_bp.route('/new-endpoint', methods=['POST'])
 @require_client_auth
+@require_idempotency_key
 def new_endpoint(authenticated_client_id=None):
     try:
+        request_id = request.request_id  # Access idempotency key
         # Implementation
         return jsonify(success_response(data))
     except Exception as e:
         logger.error(f"Error: {e}")
         return jsonify(*error_response("Error message", "ERROR_CODE", 500))
 ```
-3. **Test the endpoint**
-4. **Update this README**
 
-### Code Style
-- Use docstrings for all functions
-- Follow PEP 8 style guide
-- Add logging for important operations
-- Use type hints where helpful
-- Handle errors with try/except blocks
+3. Test endpoint
+4. Update this README
+
+---
 
 ## 📞 Support
 
 For issues, questions, or contributions:
-- Check logs first: `logs/error.log`
+- Check logs: `logs/error.log`
 - Review this README
-- Check database connectivity
-- Verify environment configuration
+- Check operational runbook: `OPERATIONAL_RUNBOOK_IMPLEMENTATION.md`
+- Verify database schema: `database/schema.sql`
+
+---
 
 ## 📄 License
 
@@ -424,6 +542,7 @@ Proprietary - AWS Spot Optimizer Team
 
 ---
 
-**Version**: 5.0
+**Version**: 6.0
 **Last Updated**: 2024-11-26
 **Maintained By**: AWS Spot Optimizer Team
+**Aligned With**: Operational Runbook Requirements v1.0
