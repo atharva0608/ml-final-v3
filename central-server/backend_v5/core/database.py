@@ -181,6 +181,171 @@ def execute_query(query: str, params: tuple = None, fetch_one: bool = False,
         raise
 
 
+def execute_with_optimistic_lock(table: str, record_id: str,
+                                  update_query: str, params: tuple,
+                                  expected_version: int) -> bool:
+    """
+    Execute update with optimistic locking.
+
+    Args:
+        table: Table name (for logging)
+        record_id: Record ID (for logging)
+        update_query: UPDATE SQL statement (should include version check)
+        params: Query parameters
+        expected_version: Expected version number
+
+    Returns:
+        True if successful, False if version conflict
+
+    Example:
+        success = execute_with_optimistic_lock(
+            'instances',
+            instance_id,
+            "UPDATE instances SET status = %s WHERE id = %s AND version = %s",
+            ('running_primary', instance_id, expected_version),
+            expected_version
+        )
+    """
+    try:
+        # Append version check to WHERE clause if not already present
+        if 'AND version = %s' not in update_query.upper():
+            # Add version check
+            versioned_params = params + (expected_version,)
+            versioned_query = update_query + " AND version = %s"
+        else:
+            versioned_query = update_query
+            versioned_params = params
+
+        affected_rows = execute_query(versioned_query, versioned_params, commit=True)
+
+        if affected_rows == 0:
+            # Version conflict - record was modified by another transaction
+            logger.warning(f"Optimistic lock conflict for {table} id={record_id}, expected_version={expected_version}")
+            return False
+
+        logger.debug(f"Optimistic lock success for {table} id={record_id}")
+        return True
+
+    except MySQLError as e:
+        logger.error(f"Error in optimistic lock update for {table} id={record_id}: {e}")
+        return False
+
+
+def execute_transaction(operations: list) -> bool:
+    """
+    Execute multiple operations in a single transaction.
+
+    Args:
+        operations: List of tuples (query, params)
+
+    Returns:
+        True if all operations succeeded, False otherwise
+    """
+    conn = None
+    cursor = None
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        # Execute all operations
+        for query, params in operations:
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+
+        # Commit transaction
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        logger.debug(f"Transaction completed successfully ({len(operations)} operations)")
+        return True
+
+    except MySQLError as e:
+        logger.error(f"Transaction failed: {e}")
+
+        if conn:
+            try:
+                conn.rollback()
+                logger.info("Transaction rolled back")
+            except:
+                pass
+
+        if cursor:
+            try:
+                cursor.close()
+            except:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+        return False
+
+
+def call_stored_procedure(proc_name: str, params: tuple = None) -> Any:
+    """
+    Call a stored procedure.
+
+    Args:
+        proc_name: Procedure name
+        params: Tuple of parameters
+
+    Returns:
+        Result set from procedure
+    """
+    conn = None
+    cursor = None
+
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+
+        if params:
+            cursor.callproc(proc_name, params)
+        else:
+            cursor.callproc(proc_name)
+
+        # Fetch results
+        results = []
+        for result in cursor.stored_results():
+            results.append(result.fetchall())
+
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        return results
+
+    except MySQLError as e:
+        logger.error(f"Error calling stored procedure {proc_name}: {e}")
+
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
+
+        if cursor:
+            try:
+                cursor.close()
+            except:
+                pass
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+        raise
+
+
 # Initialize pool on module load
 try:
     initialize_database_pool()
