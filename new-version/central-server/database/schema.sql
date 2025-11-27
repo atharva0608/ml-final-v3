@@ -232,6 +232,7 @@ CREATE TABLE IF NOT EXISTS commands (
     post_state JSON COMMENT 'State after action',
 
     -- Metadata
+    metadata JSON,
     created_by VARCHAR(100),
 
     -- Timestamps
@@ -525,15 +526,21 @@ CREATE TABLE IF NOT EXISTS instances (
 
     -- Role in State Machine
     is_active BOOLEAN DEFAULT TRUE,
-    instance_status VARCHAR(20) DEFAULT 'running_primary' COMMENT 'running_primary|running_replica|zombie|terminated',
+    instance_status VARCHAR(20) DEFAULT 'launching' COMMENT 'launching|running_primary|running_replica|promoting|terminating|terminated|zombie',
     is_primary BOOLEAN DEFAULT TRUE COMMENT 'TRUE=PRIMARY, FALSE=REPLICA',
 
     -- Lifecycle Timestamps
     installed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    launch_requested_at TIMESTAMP NULL COMMENT 'When launch command was issued',
+    launch_confirmed_at TIMESTAMP NULL COMMENT 'When instance reached running state',
+    launch_duration_seconds INT NULL COMMENT 'Time from launch request to running',
     last_switch_at TIMESTAMP NULL,
     last_interruption_signal TIMESTAMP NULL,
     interruption_handled_count INT DEFAULT 0,
     last_failover_at TIMESTAMP NULL,
+    termination_requested_at TIMESTAMP NULL COMMENT 'When terminate command was issued',
+    termination_confirmed_at TIMESTAMP NULL COMMENT 'When instance reached terminated state',
+    termination_duration_seconds INT NULL COMMENT 'Time from termination request to terminated',
     terminated_at TIMESTAMP NULL,
 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

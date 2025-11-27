@@ -24,11 +24,11 @@ def get_client_instances(client_id: str):
 
         # Filter by instance_status for proper active/terminated separation
         if status == 'active':
-            # Active space: primary + replica instances only
-            query += " AND instance_status IN ('running_primary', 'running_replica')"
+            # Active space: launching, primary, replica, promoting instances
+            query += " AND instance_status IN ('launching', 'running_primary', 'running_replica', 'promoting')"
         elif status == 'terminated':
-            # Terminated space: zombie + terminated instances only
-            query += " AND instance_status IN ('zombie', 'terminated')"
+            # Terminated space: terminating, zombie, terminated instances
+            query += " AND instance_status IN ('terminating', 'zombie', 'terminated')"
 
         if mode != 'all':
             query += " AND current_mode = %s"
@@ -717,4 +717,360 @@ def simulate_switch(instance_id: str):
 
     except Exception as e:
         logger.error(f"Simulate switch error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+# ============================================================================
+# REAL-TIME INSTANCE OPERATIONS (LAUNCHING/TERMINATING)
+# ============================================================================
+
+@instances_bp.route('/api/client/instances/launch', methods=['POST'])
+@require_client_auth
+def launch_instance():
+    """Launch new instance with real-time state tracking"""
+    data = request.json or {}
+
+    try:
+        agent_id = data.get('agent_id')
+        instance_type = data.get('instance_type')
+        target_mode = data.get('target_mode', 'spot')  # spot or ondemand
+        target_pool_id = data.get('target_pool_id')
+        az = data.get('az')
+        role_hint = data.get('role_hint', 'replica')  # replica or primary
+
+        if not agent_id:
+            return jsonify({'error': 'agent_id required'}), 400
+
+        # Verify agent belongs to client
+        agent = execute_query("""
+            SELECT id, client_id, region
+            FROM agents
+            WHERE id = %s AND client_id = %s
+        """, (agent_id, request.client_id), fetch_one=True)
+
+        if not agent:
+            return jsonify({'error': 'Agent not found'}), 404
+
+        # Generate unique IDs
+        instance_id = f"i-pending-{generate_uuid()[:8]}"  # Temporary ID until AWS confirms
+        command_id = generate_uuid()
+        request_id = generate_uuid()
+
+        # Create instance record in LAUNCHING state
+        execute_query("""
+            INSERT INTO instances
+            (id, client_id, agent_id, instance_type, region, az, current_mode, current_pool_id,
+             instance_status, is_primary, is_active, launch_requested_at, installed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'launching', %s, TRUE, NOW(), NOW())
+        """, (
+            instance_id,
+            request.client_id,
+            agent_id,
+            instance_type or 't3.medium',
+            agent['region'],
+            az or '',
+            target_mode,
+            target_pool_id or '',
+            role_hint == 'primary'
+        ))
+
+        # Create LAUNCH_INSTANCE command for immediate execution
+        execute_query("""
+            INSERT INTO commands
+            (id, client_id, agent_id, instance_id, command_type, target_mode, target_pool_id,
+             request_id, priority, status, created_by, metadata)
+            VALUES (%s, %s, %s, %s, 'LAUNCH_INSTANCE', %s, %s, %s, 100, 'pending', 'manual', %s)
+        """, (
+            command_id,
+            request.client_id,
+            agent_id,
+            instance_id,
+            target_mode,
+            target_pool_id or '',
+            request_id,
+            json.dumps({
+                'instance_type': instance_type or 't3.medium',
+                'az': az or '',
+                'role_hint': role_hint,
+                'immediate': True  # Flag for immediate execution
+            })
+        ))
+
+        # Log event
+        log_system_event('instance_launch_requested', 'info',
+                        f"Launch requested for new instance (type: {instance_type}, mode: {target_mode})",
+                        request.client_id, agent_id, instance_id,
+                        metadata={'command_id': command_id, 'role': role_hint})
+
+        # Create notification
+        create_notification(
+            f"Launching new {target_mode} instance ({instance_type})",
+            'info',
+            request.client_id
+        )
+
+        return jsonify({
+            'success': True,
+            'instance_id': instance_id,
+            'command_id': command_id,
+            'request_id': request_id,
+            'status': 'launching',
+            'message': 'Instance launch initiated. Agent will execute immediately.'
+        }), 201
+
+    except Exception as e:
+        logger.error(f"Launch instance error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@instances_bp.route('/api/client/instances/<instance_id>/terminate', methods=['POST'])
+@require_client_auth
+def terminate_instance(instance_id: str):
+    """Terminate instance with real-time state tracking"""
+    data = request.json or {}
+
+    try:
+        # Get instance
+        instance = execute_query("""
+            SELECT id, client_id, agent_id, instance_status, version
+            FROM instances
+            WHERE id = %s
+        """, (instance_id,), fetch_one=True)
+
+        if not instance:
+            return jsonify({'error': 'Instance not found'}), 404
+
+        # Verify client owns instance
+        if instance['client_id'] != request.client_id:
+            return jsonify({'error': 'Unauthorized'}), 403
+
+        # Check if already terminating/terminated
+        if instance['instance_status'] in ('terminating', 'terminated'):
+            return jsonify({
+                'success': True,
+                'instance_id': instance_id,
+                'status': instance['instance_status'],
+                'message': f"Instance already {instance['instance_status']}"
+            })
+
+        # Update instance to TERMINATING state with optimistic locking
+        rows_affected = execute_query("""
+            UPDATE instances
+            SET instance_status = 'terminating',
+                termination_requested_at = NOW(),
+                is_active = FALSE
+            WHERE id = %s AND version = %s
+        """, (instance_id, instance['version']))
+
+        if not rows_affected or rows_affected == 0:
+            return jsonify({'error': 'Instance state changed, please retry'}), 409
+
+        # Create TERMINATE_INSTANCE command for immediate execution
+        command_id = generate_uuid()
+        request_id = generate_uuid()
+
+        execute_query("""
+            INSERT INTO commands
+            (id, client_id, agent_id, instance_id, command_type, request_id,
+             priority, status, created_by, metadata)
+            VALUES (%s, %s, %s, %s, 'TERMINATE_INSTANCE', %s, 100, 'pending', 'manual', %s)
+        """, (
+            command_id,
+            request.client_id,
+            instance['agent_id'],
+            instance_id,
+            request_id,
+            json.dumps({'immediate': True})
+        ))
+
+        # Log event
+        log_system_event('instance_termination_requested', 'info',
+                        f"Termination requested for instance {instance_id}",
+                        request.client_id, instance['agent_id'], instance_id,
+                        metadata={'command_id': command_id})
+
+        # Create notification
+        create_notification(
+            f"Terminating instance {instance_id}",
+            'warning',
+            request.client_id
+        )
+
+        return jsonify({
+            'success': True,
+            'instance_id': instance_id,
+            'command_id': command_id,
+            'request_id': request_id,
+            'status': 'terminating',
+            'message': 'Instance termination initiated. Agent will execute immediately.'
+        })
+
+    except Exception as e:
+        logger.error(f"Terminate instance error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@instances_bp.route('/api/agents/<agent_id>/instance-launched', methods=['POST'])
+@require_client_auth
+def instance_launched_confirmation(agent_id: str):
+    """Handle LAUNCH_CONFIRMED from agent after AWS confirms instance is running"""
+    data = request.json or {}
+
+    try:
+        temp_instance_id = data.get('temp_instance_id')  # The temporary ID we assigned
+        real_instance_id = data.get('instance_id')  # Real AWS instance ID
+        instance_type = data.get('instance_type')
+        az = data.get('az')
+        request_id = data.get('request_id')
+
+        if not temp_instance_id or not real_instance_id:
+            return jsonify({'error': 'temp_instance_id and instance_id required'}), 400
+
+        # Check idempotency
+        existing = execute_query("""
+            SELECT id FROM instances WHERE id = %s
+        """, (real_instance_id,), fetch_one=True)
+
+        if existing:
+            logger.info(f"Instance {real_instance_id} already confirmed (idempotent)")
+            return jsonify({'success': True, 'message': 'Already confirmed'})
+
+        # Update instance: replace temp ID with real ID, move to running_replica/running_primary
+        instance = execute_query("""
+            SELECT instance_status, is_primary, launch_requested_at
+            FROM instances
+            WHERE id = %s AND agent_id = %s
+        """, (temp_instance_id, agent_id), fetch_one=True)
+
+        if not instance:
+            return jsonify({'error': 'Temporary instance not found'}), 404
+
+        # Determine final status
+        final_status = 'running_primary' if instance['is_primary'] else 'running_replica'
+
+        # Calculate launch duration
+        launch_duration = None
+        if instance['launch_requested_at']:
+            from datetime import datetime
+            launch_duration = int((datetime.utcnow() - instance['launch_requested_at']).total_seconds())
+
+        # Update with real instance ID
+        execute_query("""
+            UPDATE instances
+            SET id = %s,
+                instance_status = %s,
+                instance_type = COALESCE(%s, instance_type),
+                az = COALESCE(%s, az),
+                launch_confirmed_at = NOW(),
+                launch_duration_seconds = %s
+            WHERE id = %s AND agent_id = %s
+        """, (
+            real_instance_id,
+            final_status,
+            instance_type,
+            az,
+            launch_duration,
+            temp_instance_id,
+            agent_id
+        ))
+
+        # Log event
+        log_system_event('instance_launch_confirmed', 'info',
+                        f"Instance {real_instance_id} confirmed running (duration: {launch_duration}s)",
+                        request.client_id, agent_id, real_instance_id,
+                        metadata={'temp_id': temp_instance_id, 'launch_duration': launch_duration})
+
+        # Create notification
+        create_notification(
+            f"Instance {real_instance_id} is now running",
+            'success',
+            request.client_id
+        )
+
+        return jsonify({
+            'success': True,
+            'instance_id': real_instance_id,
+            'status': final_status,
+            'launch_duration_seconds': launch_duration
+        })
+
+    except Exception as e:
+        logger.error(f"Launch confirmation error: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+
+@instances_bp.route('/api/agents/<agent_id>/instance-terminated', methods=['POST'])
+@require_client_auth
+def instance_terminated_confirmation(agent_id: str):
+    """Handle TERMINATE_CONFIRMED from agent after AWS confirms instance is terminated"""
+    data = request.json or {}
+
+    try:
+        instance_id = data.get('instance_id')
+        request_id = data.get('request_id')
+
+        if not instance_id:
+            return jsonify({'error': 'instance_id required'}), 400
+
+        # Get instance
+        instance = execute_query("""
+            SELECT id, instance_status, termination_requested_at, version
+            FROM instances
+            WHERE id = %s AND agent_id = %s
+        """, (instance_id, agent_id), fetch_one=True)
+
+        if not instance:
+            return jsonify({'error': 'Instance not found'}), 404
+
+        # Check if already terminated (idempotency)
+        if instance['instance_status'] == 'terminated':
+            logger.info(f"Instance {instance_id} already terminated (idempotent)")
+            return jsonify({'success': True, 'message': 'Already terminated'})
+
+        # Calculate termination duration
+        termination_duration = None
+        if instance['termination_requested_at']:
+            from datetime import datetime
+            termination_duration = int((datetime.utcnow() - instance['termination_requested_at']).total_seconds())
+
+        # Update to TERMINATED state with optimistic locking
+        rows_affected = execute_query("""
+            UPDATE instances
+            SET instance_status = 'terminated',
+                termination_confirmed_at = NOW(),
+                terminated_at = NOW(),
+                termination_duration_seconds = %s,
+                is_active = FALSE
+            WHERE id = %s AND agent_id = %s AND version = %s
+        """, (
+            termination_duration,
+            instance_id,
+            agent_id,
+            instance['version']
+        ))
+
+        if not rows_affected or rows_affected == 0:
+            return jsonify({'error': 'Instance state changed, please retry'}), 409
+
+        # Log event
+        log_system_event('instance_termination_confirmed', 'info',
+                        f"Instance {instance_id} confirmed terminated (duration: {termination_duration}s)",
+                        request.client_id, agent_id, instance_id,
+                        metadata={'termination_duration': termination_duration})
+
+        # Create notification
+        create_notification(
+            f"Instance {instance_id} has been terminated",
+            'info',
+            request.client_id
+        )
+
+        return jsonify({
+            'success': True,
+            'instance_id': instance_id,
+            'status': 'terminated',
+            'termination_duration_seconds': termination_duration
+        })
+
+    except Exception as e:
+        logger.error(f"Termination confirmation error: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500

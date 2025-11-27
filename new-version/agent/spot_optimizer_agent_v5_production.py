@@ -460,6 +460,34 @@ class BackendAPI:
         response = self._make_request('POST', f'/api/agents/{agent_id}/termination-report', json=payload)
         return response is not None
 
+    # Real-time State Management: Launch Confirmation
+    def send_launch_confirmed(self, agent_id: str, temp_instance_id: str, real_instance_id: str,
+                             instance_type: str, az: str, request_id: str) -> bool:
+        """POST /api/agents/{agent_id}/instance-launched - Send LAUNCH_CONFIRMED"""
+        logger.info(f"→ SENDING LAUNCH CONFIRMATION: {real_instance_id} (was {temp_instance_id})")
+        payload = {
+            'temp_instance_id': temp_instance_id,
+            'instance_id': real_instance_id,
+            'instance_type': instance_type,
+            'az': az,
+            'request_id': request_id,
+            'confirmed_at': datetime.utcnow().isoformat()
+        }
+        response = self._make_request('POST', f'/api/agents/{agent_id}/instance-launched', json=payload)
+        return response is not None
+
+    # Real-time State Management: Termination Confirmation
+    def send_termination_confirmed(self, agent_id: str, instance_id: str, request_id: str) -> bool:
+        """POST /api/agents/{agent_id}/instance-terminated - Send TERMINATE_CONFIRMED"""
+        logger.info(f"→ SENDING TERMINATION CONFIRMATION: {instance_id}")
+        payload = {
+            'instance_id': instance_id,
+            'request_id': request_id,
+            'confirmed_at': datetime.utcnow().isoformat()
+        }
+        response = self._make_request('POST', f'/api/agents/{agent_id}/instance-terminated', json=payload)
+        return response is not None
+
     # Scenario 7: Shutdown Broadcast
     def send_shutdown_notice(self, agent_id: str, instance_id: str, metadata: Dict) -> bool:
         """POST /api/agents/{agent_id}/shutdown (best-effort)"""
@@ -713,11 +741,19 @@ class CommandExecutor:
         command_type = command.get('command_type')
         request_id = command.get('request_id')
         params = command.get('params', {})
+        metadata = command.get('metadata', {})
+
+        # Merge metadata into params for convenience
+        merged_params = {**params, **metadata, 'request_id': request_id}
+
+        # For LAUNCH_INSTANCE, also pass instance_id as temp_instance_id
+        if command_type == 'LAUNCH_INSTANCE' and command.get('instance_id'):
+            merged_params['temp_instance_id'] = command.get('instance_id')
 
         logger.info(f"=" * 80)
         logger.info(f"EXECUTING COMMAND: {command_type}")
         logger.info(f"Request ID: {request_id}")
-        logger.info(f"Parameters: {json.dumps(params, indent=2)}")
+        logger.info(f"Parameters: {json.dumps(merged_params, indent=2)}")
         logger.info(f"=" * 80)
 
         # Check idempotency
@@ -727,15 +763,15 @@ class CommandExecutor:
 
         # Execute based on type
         if command_type == 'LAUNCH_INSTANCE':
-            result = self._launch_instance(params)
+            result = self._launch_instance(merged_params)
         elif command_type == 'TERMINATE_INSTANCE':
-            result = self._terminate_instance(params)
+            result = self._terminate_instance(merged_params)
         elif command_type == 'PROMOTE_REPLICA_TO_PRIMARY':
-            result = self._promote_replica(params)
+            result = self._promote_replica(merged_params)
         elif command_type == 'APPLY_CONFIG':
-            result = self._apply_config(params)
+            result = self._apply_config(merged_params)
         elif command_type == 'SELF_DESTRUCT':
-            result = self._self_destruct(params)
+            result = self._self_destruct(merged_params)
         else:
             logger.error(f"Unknown command type: {command_type}")
             result = {'status': 'FAILURE', 'error': f'Unknown command type: {command_type}'}
@@ -749,14 +785,18 @@ class CommandExecutor:
         return result
 
     def _launch_instance(self, params: Dict) -> Dict:
-        """Launch new instance - FULLY FUNCTIONAL WITH REAL AWS CONFIG"""
+        """Launch new instance - FULLY FUNCTIONAL WITH REAL AWS CONFIG + AWS CONFIRMATION"""
         try:
             target_pool = params.get('target_pool', '')
             az = params.get('az')
             instance_type = params.get('instance_type')
             role_hint = params.get('role_hint', 'replica')
+            temp_instance_id = params.get('temp_instance_id')  # From backend
+            request_id = params.get('request_id')  # For confirmation
 
             logger.info(f"→ Launching instance: type={instance_type}, az={az}, role={role_hint}")
+            if temp_instance_id:
+                logger.info(f"  Temporary ID: {temp_instance_id}")
 
             # Parse pool if provided
             if target_pool and not az:
@@ -829,22 +869,66 @@ class CommandExecutor:
             logger.info("  Calling EC2 RunInstances API...")
             response = self.ec2.run_instances(**launch_params)
             instance_id = response['Instances'][0]['InstanceId']
+            actual_az = response['Instances'][0]['Placement']['AvailabilityZone']
+            actual_type = response['Instances'][0]['InstanceType']
 
             logger.info(f"✓ ✓ ✓ INSTANCE LAUNCHED: {instance_id}")
-            logger.info(f"  Type: {instance_type}")
-            logger.info(f"  AZ: {az}")
+            logger.info(f"  Type: {actual_type}")
+            logger.info(f"  AZ: {actual_az}")
             logger.info(f"  AMI: {ami_id}")
+
+            # POLLING LOOP: Wait for instance to reach 'running' state
+            logger.info(f"  → Polling AWS for instance state confirmation...")
+            max_wait_time = 300  # 5 minutes
+            poll_interval = 5  # 5 seconds
+            elapsed = 0
+            confirmed_running = False
+
+            while elapsed < max_wait_time:
+                try:
+                    time.sleep(poll_interval)
+                    elapsed += poll_interval
+
+                    state_response = self.ec2.describe_instances(InstanceIds=[instance_id])
+                    if state_response['Reservations']:
+                        current_state = state_response['Reservations'][0]['Instances'][0]['State']['Name']
+                        logger.debug(f"    State check ({elapsed}s): {current_state}")
+
+                        if current_state == 'running':
+                            logger.info(f"  ✓ ✓ CONFIRMED RUNNING after {elapsed}s")
+                            confirmed_running = True
+                            break
+                        elif current_state in ['terminated', 'terminating', 'stopping', 'stopped']:
+                            logger.error(f"  ✗ Instance reached unexpected state: {current_state}")
+                            break
+                except Exception as poll_error:
+                    logger.warning(f"  Poll error: {poll_error}")
+                    continue
+
+            # Send LAUNCH_CONFIRMED event to backend if we have confirmation
+            if confirmed_running and temp_instance_id and request_id:
+                logger.info(f"  → Sending LAUNCH_CONFIRMED to backend...")
+                self.backend.send_launch_confirmed(
+                    config.agent_id,
+                    temp_instance_id,
+                    instance_id,
+                    actual_type,
+                    actual_az,
+                    request_id
+                )
 
             return {
                 'status': 'SUCCESS',
                 'instance_id': instance_id,
-                'state': 'pending',
-                'instance_type': instance_type,
-                'az': az,
+                'state': 'running' if confirmed_running else 'pending',
+                'instance_type': actual_type,
+                'az': actual_az,
+                'confirmed': confirmed_running,
                 'metadata': {
                     'ami_id': ami_id,
                     'security_groups': config.current_security_groups,
-                    'subnet_id': config.current_subnet_id
+                    'subnet_id': config.current_subnet_id,
+                    'confirmation_time_seconds': elapsed if confirmed_running else None
                 }
             }
         except ClientError as e:
@@ -864,34 +948,85 @@ class CommandExecutor:
             }
 
     def _terminate_instance(self, params: Dict) -> Dict:
-        """Terminate instance - FULLY FUNCTIONAL"""
+        """Terminate instance - FULLY FUNCTIONAL + AWS CONFIRMATION"""
         try:
             instance_id = params.get('instance_id')
+            request_id = params.get('request_id')  # For confirmation
             logger.info(f"→ Terminating instance: {instance_id}")
 
             # Check if already terminated
             response = self.ec2.describe_instances(InstanceIds=[instance_id])
+            already_terminated = False
             if response['Reservations']:
                 state = response['Reservations'][0]['Instances'][0]['State']['Name']
                 logger.info(f"  Current state: {state}")
 
-                if state in ['terminated', 'terminating']:
+                if state == 'terminated':
                     logger.info(f"✓ Instance {instance_id} already terminated")
+                    already_terminated = True
+                    # Still send confirmation if we have request_id
+                    if request_id:
+                        logger.info(f"  → Sending TERMINATE_CONFIRMED to backend...")
+                        self.backend.send_termination_confirmed(
+                            config.agent_id,
+                            instance_id,
+                            request_id
+                        )
                     return {
                         'status': 'SUCCESS',
                         'instance_id': instance_id,
-                        'already_terminated': True
+                        'already_terminated': True,
+                        'confirmed': True
                     }
 
             # Terminate
             logger.info(f"  Calling EC2 TerminateInstances API...")
             self.ec2.terminate_instances(InstanceIds=[instance_id])
-            logger.info(f"✓ ✓ ✓ INSTANCE TERMINATED: {instance_id}")
+            logger.info(f"✓ ✓ ✓ TERMINATION INITIATED: {instance_id}")
+
+            # POLLING LOOP: Wait for instance to reach 'terminated' state
+            logger.info(f"  → Polling AWS for termination confirmation...")
+            max_wait_time = 180  # 3 minutes
+            poll_interval = 5  # 5 seconds
+            elapsed = 0
+            confirmed_terminated = False
+
+            while elapsed < max_wait_time:
+                try:
+                    time.sleep(poll_interval)
+                    elapsed += poll_interval
+
+                    state_response = self.ec2.describe_instances(InstanceIds=[instance_id])
+                    if state_response['Reservations']:
+                        current_state = state_response['Reservations'][0]['Instances'][0]['State']['Name']
+                        logger.debug(f"    State check ({elapsed}s): {current_state}")
+
+                        if current_state == 'terminated':
+                            logger.info(f"  ✓ ✓ CONFIRMED TERMINATED after {elapsed}s")
+                            confirmed_terminated = True
+                            break
+                except Exception as poll_error:
+                    logger.warning(f"  Poll error: {poll_error}")
+                    continue
+
+            # Send TERMINATE_CONFIRMED event to backend if we have confirmation
+            if confirmed_terminated and request_id:
+                logger.info(f"  → Sending TERMINATE_CONFIRMED to backend...")
+                self.backend.send_termination_confirmed(
+                    config.agent_id,
+                    instance_id,
+                    request_id
+                )
 
             return {
                 'status': 'SUCCESS',
                 'instance_id': instance_id,
-                'termination_time': datetime.utcnow().isoformat()
+                'state': 'terminated' if confirmed_terminated else 'terminating',
+                'confirmed': confirmed_terminated,
+                'termination_time': datetime.utcnow().isoformat(),
+                'metadata': {
+                    'confirmation_time_seconds': elapsed if confirmed_terminated else None
+                }
             }
         except Exception as e:
             logger.error(f"✗ ✗ ✗ TERMINATION FAILED: {e}", exc_info=True)
