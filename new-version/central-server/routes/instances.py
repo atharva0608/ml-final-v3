@@ -11,6 +11,21 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 instances_bp = Blueprint('instances', __name__)
 
+# Import event broadcasting functions (lazy import to avoid circular dependencies)
+def _get_event_funcs():
+    from routes.events import (
+        broadcast_instance_launching,
+        broadcast_instance_running,
+        broadcast_instance_terminating,
+        broadcast_instance_terminated
+    )
+    return {
+        'launching': broadcast_instance_launching,
+        'running': broadcast_instance_running,
+        'terminating': broadcast_instance_terminating,
+        'terminated': broadcast_instance_terminated
+    }
+
 @instances_bp.route('/api/client/<client_id>/instances', methods=['GET'])
 def get_client_instances(client_id: str):
     """Get all instances for client with filtering"""
@@ -808,6 +823,21 @@ def launch_instance():
             request.client_id
         )
 
+        # Broadcast INSTANCE_LAUNCHING event via SSE
+        try:
+            events = _get_event_funcs()
+            events['launching'](
+                request.client_id,
+                instance_id,
+                instance_type or 't3.medium',
+                target_mode=target_mode,
+                az=az,
+                role_hint=role_hint,
+                command_id=command_id
+            )
+        except Exception as broadcast_err:
+            logger.warning(f"Failed to broadcast INSTANCE_LAUNCHING: {broadcast_err}")
+
         return jsonify({
             'success': True,
             'instance_id': instance_id,
@@ -894,6 +924,17 @@ def terminate_instance(instance_id: str):
             'warning',
             request.client_id
         )
+
+        # Broadcast INSTANCE_TERMINATING event via SSE
+        try:
+            events = _get_event_funcs()
+            events['terminating'](
+                request.client_id,
+                instance_id,
+                command_id=command_id
+            )
+        except Exception as broadcast_err:
+            logger.warning(f"Failed to broadcast INSTANCE_TERMINATING: {broadcast_err}")
 
         return jsonify({
             'success': True,
@@ -986,6 +1027,20 @@ def instance_launched_confirmation(agent_id: str):
             request.client_id
         )
 
+        # Broadcast INSTANCE_RUNNING event via SSE
+        try:
+            events = _get_event_funcs()
+            events['running'](
+                request.client_id,
+                real_instance_id,
+                launch_duration_seconds=launch_duration,
+                final_status=final_status,
+                instance_type=instance_type,
+                az=az
+            )
+        except Exception as broadcast_err:
+            logger.warning(f"Failed to broadcast INSTANCE_RUNNING: {broadcast_err}")
+
         return jsonify({
             'success': True,
             'instance_id': real_instance_id,
@@ -1063,6 +1118,17 @@ def instance_terminated_confirmation(agent_id: str):
             'info',
             request.client_id
         )
+
+        # Broadcast INSTANCE_TERMINATED event via SSE
+        try:
+            events = _get_event_funcs()
+            events['terminated'](
+                request.client_id,
+                instance_id,
+                termination_duration_seconds=termination_duration
+            )
+        except Exception as broadcast_err:
+            logger.warning(f"Failed to broadcast INSTANCE_TERMINATED: {broadcast_err}")
 
         return jsonify({
             'success': True,

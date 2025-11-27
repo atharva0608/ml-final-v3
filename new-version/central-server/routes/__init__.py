@@ -14,6 +14,7 @@ def register_routes(app):
     from .reporting import reporting_bp
     from .analytics import analytics_bp
     from .notifications import notifications_bp
+    from .events import events_bp
 
     app.register_blueprint(health_bp)
     app.register_blueprint(admin_bp)
@@ -27,3 +28,4 @@ def register_routes(app):
     app.register_blueprint(reporting_bp)
     app.register_blueprint(analytics_bp)
     app.register_blueprint(notifications_bp)
+    app.register_blueprint(events_bp)
