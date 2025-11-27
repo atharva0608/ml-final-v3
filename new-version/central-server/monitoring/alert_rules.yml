@@ -1,0 +1,293 @@
+# Prometheus Alert Rules for AWS Spot Optimizer v6.0
+
+groups:
+  # ============================================================================
+  # CRITICAL ALERTS (Immediate Action Required)
+  # ============================================================================
+  - name: critical_alerts
+    interval: 10s
+    rules:
+      # Multiple PRIMARY per Agent (Violates Core Invariant)
+      - alert: MultiplePrimaryInstancesPerAgent
+        expr: |
+          (
+            mysql_global_status_questions{query="SELECT agent_id, COUNT(*) as primary_count FROM instances WHERE is_primary=TRUE AND instance_status='running_primary' GROUP BY agent_id HAVING primary_count > 1"}
+            > 0
+          )
+        for: 30s
+        labels:
+          severity: critical
+          category: data_integrity
+        annotations:
+          summary: "Multiple PRIMARY instances detected for single agent"
+          description: "Agent {{ $labels.agent_id }} has {{ $value }} PRIMARY instances. Core invariant violated. Immediate investigation required."
+          runbook: "https://docs.spot-optimizer.io/runbooks/multiple-primary"
+
+      # Agent Heartbeat Miss Rate Exceeds Threshold
+      - alert: HighAgentHeartbeatMissRate
+        expr: |
+          (
+            (sum(rate(agent_heartbeat_missed_total[5m])) / sum(rate(agent_heartbeat_expected_total[5m])))
+            > 0.05
+          )
+        for: 5m
+        labels:
+          severity: critical
+          category: agent_health
+        annotations:
+          summary: "Agent heartbeat miss rate exceeds 5%"
+          description: "Current miss rate: {{ $value | humanizePercentage }}. Target: <5%. Check network connectivity and agent health."
+          runbook: "https://docs.spot-optimizer.io/runbooks/heartbeat-miss-rate"
+
+      # Emergency Promotion Timeout
+      - alert: EmergencyPromotionTimeout
+        expr: |
+          histogram_quantile(0.95,
+            rate(instance_promotion_duration_seconds_bucket{type="emergency"}[5m])
+          ) > 120
+        for: 1m
+        labels:
+          severity: critical
+          category: emergency_flow
+        annotations:
+          summary: "Emergency promotions taking >2 minutes (p95)"
+          description: "P95 emergency promotion time: {{ $value }}s (target: <120s). Emergency failover SLO violated."
+          runbook: "https://docs.spot-optimizer.io/runbooks/emergency-timeout"
+
+      # Database Connection Pool Exhausted
+      - alert: DatabasePoolExhausted
+        expr: |
+          mysql_global_status_threads_connected / mysql_global_variables_max_connections > 0.90
+        for: 2m
+        labels:
+          severity: critical
+          category: database
+        annotations:
+          summary: "MySQL connection pool nearly exhausted"
+          description: "{{ $value | humanizePercentage }} of max connections in use. Risk of connection errors."
+          runbook: "https://docs.spot-optimizer.io/runbooks/db-pool-exhausted"
+
+  # ============================================================================
+  # WARNING ALERTS (Action Needed Soon)
+  # ============================================================================
+  - name: warning_alerts
+    interval: 30s
+    rules:
+      # Switch Downtime Exceeds P95 Target
+      - alert: HighSwitchDowntime
+        expr: |
+          histogram_quantile(0.95,
+            rate(switch_downtime_seconds_bucket[24h])
+          ) > 10
+        for: 10m
+        labels:
+          severity: warning
+          category: performance
+        annotations:
+          summary: "Switch downtime p95 exceeds 10s target"
+          description: "Current p95: {{ $value }}s. Target: <10s. Review switch optimization."
+          runbook: "https://docs.spot-optimizer.io/runbooks/high-downtime"
+
+      # Data Consolidation Job Failed
+      - alert: ConsolidationJobFailed
+        expr: |
+          (
+            time() - consolidation_job_last_success_timestamp
+          ) > 43200  # 12 hours
+        for: 1h
+        labels:
+          severity: warning
+          category: data_pipeline
+        annotations:
+          summary: "Pricing consolidation job has not completed successfully in 12+ hours"
+          description: "Last successful run: {{ $value | humanizeDuration }} ago. Pricing data may be stale."
+          runbook: "https://docs.spot-optimizer.io/runbooks/consolidation-failure"
+
+      # Zombie Instance Accumulation
+      - alert: ZombieInstanceAccumulation
+        expr: |
+          sum by (client_id) (
+            instance_status{status="zombie"}
+          ) > 100
+        for: 1h
+        labels:
+          severity: warning
+          category: resource_management
+        annotations:
+          summary: "Excessive zombie instances for client"
+          description: "Client {{ $labels.client_id }} has {{ $value }} zombie instances. Review auto_terminate settings."
+          runbook: "https://docs.spot-optimizer.io/runbooks/zombie-accumulation"
+
+      # ML Decision Latency High
+      - alert: MLDecisionLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            rate(ml_decision_duration_seconds_bucket[5m])
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          category: ml_performance
+        annotations:
+          summary: "ML decision engine latency exceeds 500ms (p95)"
+          description: "Current p95 latency: {{ $value }}s. Target: <500ms. Check model performance."
+          runbook: "https://docs.spot-optimizer.io/runbooks/ml-latency"
+
+      # Agent Offline
+      - alert: AgentOffline
+        expr: |
+          (time() - agent_last_heartbeat_timestamp) > 120
+        for: 2m
+        labels:
+          severity: warning
+          category: agent_health
+        annotations:
+          summary: "Agent {{ $labels.agent_id }} is offline"
+          description: "No heartbeat received for {{ $value | humanizeDuration }}. Agent may be down."
+          runbook: "https://docs.spot-optimizer.io/runbooks/agent-offline"
+
+      # Optimistic Lock Conflict Rate High
+      - alert: HighOptimisticLockConflicts
+        expr: |
+          rate(optimistic_lock_conflicts_total[5m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+          category: concurrency
+        annotations:
+          summary: "High rate of optimistic lock conflicts"
+          description: "{{ $value }} conflicts/sec. May indicate high concurrency or slow transactions."
+          runbook: "https://docs.spot-optimizer.io/runbooks/lock-conflicts"
+
+  # ============================================================================
+  # INFO ALERTS (Informational)
+  # ============================================================================
+  - name: info_alerts
+    interval: 60s
+    rules:
+      # New Agent Registered
+      - alert: NewAgentRegistered
+        expr: |
+          increase(agent_registrations_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: info
+          category: lifecycle
+        annotations:
+          summary: "New agent(s) registered"
+          description: "{{ $value }} new agent(s) registered in the last 5 minutes."
+
+      # Emergency Event Occurred
+      - alert: EmergencyEventOccurred
+        expr: |
+          increase(emergency_events_total[1m]) > 0
+        for: 30s
+        labels:
+          severity: info
+          category: emergency_flow
+        annotations:
+          summary: "Emergency event detected"
+          description: "{{ $labels.event_type }} event for agent {{ $labels.agent_id }}."
+
+      # Consolidation Job Completed
+      - alert: ConsolidationJobCompleted
+        expr: |
+          increase(consolidation_job_completions_total[15m]) > 0
+        for: 1m
+        labels:
+          severity: info
+          category: data_pipeline
+        annotations:
+          summary: "Pricing consolidation job completed"
+          description: "Deduped: {{ $value.duplicates_removed }}, Interpolated: {{ $value.gaps_filled }}"
+
+  # ============================================================================
+  # SLO ALERTS (Service Level Objectives)
+  # ============================================================================
+  - name: slo_alerts
+    interval: 60s
+    rules:
+      # Agent Uptime SLO
+      - alert: AgentUptimeSLOViolation
+        expr: |
+          (
+            sum(rate(agent_heartbeat_received_total[24h])) /
+            sum(rate(agent_heartbeat_expected_total[24h]))
+          ) < 0.95
+        for: 1h
+        labels:
+          severity: warning
+          category: slo
+        annotations:
+          summary: "Agent uptime SLO violated (target: 95%)"
+          description: "Current uptime: {{ $value | humanizePercentage }}. SLO: 95%."
+          runbook: "https://docs.spot-optimizer.io/runbooks/uptime-slo"
+
+      # Switch Success Rate SLO
+      - alert: SwitchSuccessRateSLOViolation
+        expr: |
+          (
+            sum(rate(switch_success_total[24h])) /
+            sum(rate(switch_attempts_total[24h]))
+          ) < 0.99
+        for: 1h
+        labels:
+          severity: warning
+          category: slo
+        annotations:
+          summary: "Switch success rate SLO violated (target: 99%)"
+          description: "Current success rate: {{ $value | humanizePercentage }}. SLO: 99%."
+          runbook: "https://docs.spot-optimizer.io/runbooks/switch-success-slo"
+
+      # Emergency Promotion Success Rate
+      - alert: EmergencyPromotionSuccessRateSLOViolation
+        expr: |
+          (
+            sum(rate(emergency_promotion_success_total[24h])) /
+            sum(rate(emergency_promotion_attempts_total[24h]))
+          ) < 0.99
+        for: 1h
+        labels:
+          severity: critical
+          category: slo
+        annotations:
+          summary: "Emergency promotion success rate below 99%"
+          description: "Current rate: {{ $value | humanizePercentage }}. Critical SLO violated."
+          runbook: "https://docs.spot-optimizer.io/runbooks/emergency-success-slo"
+
+  # ============================================================================
+  # COST ALERTS
+  # ============================================================================
+  - name: cost_alerts
+    interval: 300s  # Every 5 minutes
+    rules:
+      # Savings Below Threshold
+      - alert: LowSavingsPercentage
+        expr: |
+          (
+            sum by (client_id) (savings_total) /
+            sum by (client_id) (baseline_cost_total)
+          ) < 0.30
+        for: 24h
+        labels:
+          severity: info
+          category: cost
+        annotations:
+          summary: "Savings below 30% for client"
+          description: "Client {{ $labels.client_id }}: {{ $value | humanizePercentage }} savings. Expected: >30%."
+          runbook: "https://docs.spot-optimizer.io/runbooks/low-savings"
+
+      # High Zombie Cost Burden
+      - alert: HighZombieCostBurden
+        expr: |
+          sum by (client_id) (
+            zombie_instance_cost
+          ) > 100
+        for: 12h
+        labels:
+          severity: warning
+          category: cost
+        annotations:
+          summary: "High zombie instance cost for client"
+          description: "Client {{ $labels.client_id }}: ${{ $value }} in zombie costs. Review retention policy."
+          runbook: "https://docs.spot-optimizer.io/runbooks/zombie-cost"

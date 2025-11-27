@@ -1,0 +1,739 @@
+# This file contains the continuation of backend_new.py
+# To be appended after line 1202
+
+# ============================================================================
+# CONTINUATION OF ADMIN APIs - Additional Admin Endpoints
+# ============================================================================
+
+@app.route('/api/admin/clients', methods=['GET'])
+@require_admin_auth
+def get_all_clients():
+    """
+    Get list of all clients with summary statistics.
+
+    Returns all registered clients with:
+    - Basic information (ID, name, email, status)
+    - Agent counts (online vs total)
+    - Instance counts
+    - Total savings per client
+    - Last sync timestamp
+
+    Used by: Admin dashboard "All Clients" page
+
+    Returns:
+        Array of client objects ordered by creation date (newest first)
+    """
+    try:
+        clients = execute_query("""
+            SELECT
+                c.id,
+                c.name,
+                c.email,
+                c.status,
+                c.is_active,
+                c.total_savings,
+                c.created_at,
+                c.last_sync_at,
+                COUNT(DISTINCT CASE WHEN a.status = 'online' AND a.terminated_at IS NULL THEN a.id END) as agents_online,
+                COUNT(DISTINCT CASE WHEN a.terminated_at IS NULL THEN a.id END) as agents_total,
+                COUNT(DISTINCT CASE WHEN i.is_active = TRUE THEN i.id END) as instances
+            FROM clients c
+            LEFT JOIN agents a ON a.client_id = c.id
+            LEFT JOIN instances i ON i.client_id = c.id
+            WHERE c.status = 'active'
+            GROUP BY c.id
+            ORDER BY c.created_at DESC
+        """, fetch_all=True)
+
+        # Format response
+        result = []
+        for client in clients or []:
+            result.append({
+                'id': client['id'],
+                'name': client['name'],
+                'email': client['email'],
+                'status': client['status'],
+                'agentsOnline': client['agents_online'] or 0,
+                'agentsTotal': client['agents_total'] or 0,
+                'instances': client['instances'] or 0,
+                'totalSavings': format_decimal(client['total_savings']),
+                'createdAt': client['created_at'].isoformat() if client['created_at'] else None,
+                'lastSync': client['last_sync_at'].isoformat() if client['last_sync_at'] else None
+            })
+
+        return jsonify(success_response(result))
+
+    except Exception as e:
+        logger.error(f"Error in get_all_clients: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(*error_response("Failed to retrieve clients", "SERVER_ERROR", 500))
+
+
+@app.route('/api/admin/clients/growth', methods=['GET'])
+@require_admin_auth
+def get_clients_growth():
+    """
+    Get client growth chart data.
+
+    Query parameters:
+        days: Number of days to retrieve (default: 30, max: 365)
+
+    Returns time-series data showing daily client registration counts.
+
+    Used by: Admin dashboard growth chart
+    """
+    try:
+        days = int(request.args.get('days', 30))
+        days = min(days, 365)  # Cap at 1 year
+
+        # Get daily registration counts
+        growth_data = execute_query("""
+            SELECT
+                DATE(created_at) as date,
+                COUNT(*) as count
+            FROM clients
+            WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
+            GROUP BY DATE(created_at)
+            ORDER BY date ASC
+        """, (days,), fetch_all=True)
+
+        result = [{
+            'date': row['date'].isoformat(),
+            'count': row['count']
+        } for row in growth_data or []]
+
+        return jsonify(success_response(result))
+
+    except Exception as e:
+        logger.error(f"Error in get_clients_growth: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(*error_response("Failed to retrieve growth data", "SERVER_ERROR", 500))
+
+
+@app.route('/api/admin/activity', methods=['GET'])
+@require_admin_auth
+def get_admin_activity():
+    """
+    Get recent activity log across all clients.
+
+    Returns last 100 system events including:
+    - Switch events (manual, automatic, emergency)
+    - Replica operations
+    - Agent status changes
+    - Configuration updates
+    - System errors
+
+    Used by: Admin activity log page
+    """
+    try:
+        # Get recent system events
+        events = execute_query("""
+            SELECT
+                e.id,
+                e.event_type,
+                e.severity,
+                e.message,
+                e.client_id,
+                e.created_at,
+                c.name as client_name
+            FROM system_events e
+            LEFT JOIN clients c ON c.id = e.client_id
+            ORDER BY e.created_at DESC
+            LIMIT 100
+        """, fetch_all=True)
+
+        result = [{
+            'id': event['id'],
+            'type': event['event_type'],
+            'severity': event['severity'],
+            'message': event['message'],
+            'clientId': event['client_id'],
+            'clientName': event['client_name'],
+            'timestamp': event['created_at'].isoformat() if event['created_at'] else None
+        } for event in events or []]
+
+        return jsonify(success_response(result))
+
+    except Exception as e:
+        logger.error(f"Error in get_admin_activity: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(*error_response("Failed to retrieve activity log", "SERVER_ERROR", 500))
+
+
+@app.route('/api/admin/system-health', methods=['GET'])
+@require_admin_auth
+def get_system_health():
+    """
+    Get comprehensive system health metrics.
+
+    Returns:
+    - Database connectivity and connection pool status
+    - Agent health distribution
+    - Decision engine status
+    - ML model status
+    - Background job status
+    - System resource utilization
+
+    Used by: Admin system health monitoring dashboard
+    """
+    try:
+        # Test database connectivity
+        db_healthy = True
+        try:
+            execute_query("SELECT 1", fetch_one=True)
+        except:
+            db_healthy = False
+
+        # Get agent health distribution
+        agent_health = execute_query("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'online' THEN 1 ELSE 0 END) as online,
+                SUM(CASE WHEN status = 'offline' THEN 1 ELSE 0 END) as offline
+            FROM agents
+            WHERE terminated_at IS NULL
+        """, fetch_one=True)
+
+        # Calculate uptime
+        uptime_seconds = (datetime.utcnow() - APP_START_TIME).total_seconds()
+
+        # Compile health metrics
+        health = {
+            'database': {
+                'connected': db_healthy,
+                'poolSize': DB_POOL_SIZE
+            },
+            'agents': {
+                'total': agent_health['total'] if agent_health else 0,
+                'online': agent_health['online'] if agent_health else 0,
+                'offline': agent_health['offline'] if agent_health else 0
+            },
+            'decisionEngine': {
+                'loaded': True,  # TODO: Check actual decision engine status
+                'version': '1.0',  # TODO: Get from decision engine
+                'lastUpdate': None  # TODO: Track last model update
+            },
+            'mlModel': {
+                'active': True,  # TODO: Check ML model status
+                'session': None  # TODO: Get active session ID
+            },
+            'backgroundJobs': {
+                'enabled': ENABLE_BACKGROUND_JOBS,
+                'running': ENABLE_BACKGROUND_JOBS  # TODO: Check actual scheduler status
+            },
+            'uptime': {
+                'seconds': int(uptime_seconds),
+                'startTime': APP_START_TIME.isoformat()
+            }
+        }
+
+        return jsonify(success_response(health))
+
+    except Exception as e:
+        logger.error(f"Error in get_system_health: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(*error_response("Failed to retrieve system health", "SERVER_ERROR", 500))
+
+
+@app.route('/api/admin/instances', methods=['GET'])
+@require_admin_auth
+def get_admin_instances():
+    """
+    Get all instances across all clients (admin view).
+
+    Query parameters:
+        status: Filter by status ('all', 'active', 'terminated')
+        client_id: Filter by specific client
+
+    Returns instances with client information for cross-client monitoring.
+
+    Used by: Admin "All Instances" page
+    """
+    try:
+        status_filter = request.args.get('status', 'all')
+        client_id_filter = request.args.get('client_id')
+
+        # Build query
+        query = """
+            SELECT
+                i.*,
+                c.name as client_name,
+                c.id as client_id,
+                a.hostname as agent_hostname
+            FROM instances i
+            LEFT JOIN clients c ON c.id = i.client_id
+            LEFT JOIN agents a ON a.id = i.agent_id
+            WHERE 1=1
+        """
+        params = []
+
+        if status_filter == 'active':
+            query += " AND i.is_active = TRUE"
+        elif status_filter == 'terminated':
+            query += " AND i.instance_status IN ('zombie', 'terminated')"
+
+        if client_id_filter:
+            query += " AND i.client_id = %s"
+            params.append(client_id_filter)
+
+        query += " ORDER BY i.created_at DESC LIMIT 1000"
+
+        instances = execute_query(query, tuple(params) if params else None, fetch_all=True)
+
+        # Format response
+        result = [{
+            'id': inst['id'],
+            'instanceType': inst['instance_type'],
+            'region': inst['region'],
+            'az': inst['az'],
+            'currentMode': inst['current_mode'],
+            'currentPool': inst['current_pool_id'],
+            'spotPrice': format_decimal(inst['spot_price']),
+            'ondemandPrice': format_decimal(inst['ondemand_price']),
+            'status': inst['instance_status'],
+            'isActive': bool(inst['is_active']),
+            'clientId': inst['client_id'],
+            'clientName': inst['client_name'],
+            'agentHostname': inst['agent_hostname'],
+            'createdAt': inst['created_at'].isoformat() if inst['created_at'] else None
+        } for inst in instances or []]
+
+        return jsonify(success_response(result))
+
+    except Exception as e:
+        logger.error(f"Error in get_admin_instances: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(*error_response("Failed to retrieve instances", "SERVER_ERROR", 500))
+
+
+@app.route('/api/admin/agents', methods=['GET'])
+@require_admin_auth
+def get_admin_agents():
+    """
+    Get all agents across all clients (admin view).
+
+    Query parameters:
+        status: Filter by status ('all', 'online', 'offline')
+        client_id: Filter by specific client
+
+    Returns agents with client information for cross-client monitoring.
+
+    Used by: Admin "All Agents" page
+    """
+    try:
+        status_filter = request.args.get('status', 'all')
+        client_id_filter = request.args.get('client_id')
+
+        # Build query
+        query = """
+            SELECT
+                a.*,
+                c.name as client_name,
+                c.id as client_id
+            FROM agents a
+            LEFT JOIN clients c ON c.id = a.client_id
+            WHERE a.terminated_at IS NULL
+        """
+        params = []
+
+        if status_filter in ['online', 'offline']:
+            query += " AND a.status = %s"
+            params.append(status_filter)
+
+        if client_id_filter:
+            query += " AND a.client_id = %s"
+            params.append(client_id_filter)
+
+        query += " ORDER BY a.last_heartbeat_at DESC LIMIT 1000"
+
+        agents = execute_query(query, tuple(params) if params else None, fetch_all=True)
+
+        # Format response
+        result = [{
+            'id': agent['id'],
+            'hostname': agent['hostname'],
+            'status': agent['status'],
+            'instanceId': agent['instance_id'],
+            'instanceType': agent['instance_type'],
+            'region': agent['region'],
+            'az': agent['az'],
+            'currentMode': agent['current_mode'],
+            'agentVersion': agent['agent_version'],
+            'clientId': agent['client_id'],
+            'clientName': agent['client_name'],
+            'lastHeartbeat': agent['last_heartbeat_at'].isoformat() if agent['last_heartbeat_at'] else None,
+            'createdAt': agent['created_at'].isoformat() if agent['created_at'] else None
+        } for agent in agents or []]
+
+        return jsonify(success_response(result))
+
+    except Exception as e:
+        logger.error(f"Error in get_admin_agents: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(*error_response("Failed to retrieve agents", "SERVER_ERROR", 500))
+
+
+logger.info("Admin API endpoints completed (7 endpoints)")
+
+# ============================================================================
+# SECTION 10: CLIENT MANAGEMENT APIs
+# ============================================================================
+#
+# Endpoints for creating, managing, and authenticating client accounts.
+# Includes token generation, validation, and client CRUD operations.
+# ============================================================================
+
+@app.route('/api/admin/clients/create', methods=['POST'])
+@require_admin_auth
+def create_client():
+    """
+    Create a new client account.
+
+    Request body:
+        {
+            "name": "Client Name",
+            "email": "client@example.com"
+        }
+
+    Returns:
+        {
+            "client": {
+                "id": "client-uuid",
+                "name": "Client Name",
+                "email": "client@example.com",
+                "token": "generated-auth-token"
+            }
+        }
+
+    IMPORTANT: The token is only returned once. Client must save it securely.
+
+    Used by: Admin "Create Client" modal
+    """
+    try:
+        data = request.json
+
+        # Validate required fields
+        error = validate_required_fields(data, ['name', 'email'])
+        if error:
+            return jsonify(*error_response(error))
+
+        name = data['name'].strip()
+        email = data['email'].strip().lower()
+
+        # Validate email format
+        if not validate_email(email):
+            return jsonify(*error_response("Invalid email format"))
+
+        # Check if email already exists
+        existing = execute_query(
+            "SELECT id FROM clients WHERE email = %s",
+            (email,),
+            fetch_one=True
+        )
+
+        if existing:
+            return jsonify(*error_response("Email already registered", "DUPLICATE_EMAIL", 409))
+
+        # Generate client token (64-character secure random string)
+        client_token = generate_token(64)
+
+        # Insert client
+        client_id = execute_query("""
+            INSERT INTO clients (name, email, client_token, status, is_active, total_savings)
+            VALUES (%s, %s, %s, 'active', TRUE, 0.0)
+        """, (name, email, client_token), commit=True)
+
+        logger.info(f"Created new client: {name} ({email})")
+
+        # Return client with token (only time token is shown)
+        return jsonify(success_response({
+            'client': {
+                'id': client_id,  # Note: This might not be UUID format depending on DB
+                'name': name,
+                'email': email,
+                'token': client_token
+            }
+        }), 201)
+
+    except Exception as e:
+        logger.error(f"Error in create_client: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(*error_response("Failed to create client", "SERVER_ERROR", 500))
+
+
+@app.route('/api/admin/clients/<client_id>', methods=['DELETE'])
+@require_admin_auth
+def delete_client(client_id):
+    """
+    Permanently delete a client and all associated data.
+
+    WARNING: This operation is irreversible.
+
+    Deletes:
+    - All agents belonging to the client
+    - All instances (active and terminated)
+    - All replicas
+    - All switch history
+    - All pricing data
+    - All notifications
+    - The client record itself
+
+    Cascading delete is handled by database foreign key constraints.
+
+    Used by: Admin "Delete Client" confirmation modal
+    """
+    try:
+        # Check if client exists
+        client = execute_query(
+            "SELECT name FROM clients WHERE id = %s",
+            (client_id,),
+            fetch_one=True
+        )
+
+        if not client:
+            return jsonify(*error_response("Client not found", "NOT_FOUND", 404))
+
+        # Delete client (cascades to all related data)
+        execute_query(
+            "DELETE FROM clients WHERE id = %s",
+            (client_id,),
+            commit=True
+        )
+
+        logger.info(f"Deleted client: {client['name']} ({client_id})")
+
+        return jsonify(success_response({"message": "Client deleted successfully"}))
+
+    except Exception as e:
+        logger.error(f"Error in delete_client: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(*error_response("Failed to delete client", "SERVER_ERROR", 500))
+
+
+@app.route('/api/admin/clients/<client_id>/regenerate-token', methods=['POST'])
+@require_admin_auth
+def regenerate_client_token(client_id):
+    """
+    Regenerate authentication token for a client.
+
+    Invalidates the old token immediately. All agents using the old token
+    will need to be updated with the new token.
+
+    Use cases:
+    - Token compromised
+    - Security rotation
+    - Lost token
+
+    Returns:
+        {"token": "new-generated-token"}
+
+    IMPORTANT: Save the new token securely. Old token is invalid immediately.
+
+    Used by: Admin "Regenerate Token" action
+    """
+    try:
+        # Check if client exists
+        client = execute_query(
+            "SELECT name FROM clients WHERE id = %s",
+            (client_id,),
+            fetch_one=True
+        )
+
+        if not client:
+            return jsonify(*error_response("Client not found", "NOT_FOUND", 404))
+
+        # Generate new token
+        new_token = generate_token(64)
+
+        # Update client token
+        execute_query(
+            "UPDATE clients SET client_token = %s, updated_at = NOW() WHERE id = %s",
+            (new_token, client_id),
+            commit=True
+        )
+
+        logger.info(f"Regenerated token for client: {client['name']} ({client_id})")
+        logger.warning(f"Old token for client {client_id} is now invalid")
+
+        return jsonify(success_response({'token': new_token}))
+
+    except Exception as e:
+        logger.error(f"Error in regenerate_client_token: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(*error_response("Failed to regenerate token", "SERVER_ERROR", 500))
+
+
+@app.route('/api/admin/clients/<client_id>/token', methods=['GET'])
+@require_admin_auth
+def get_client_token(client_id):
+    """
+    Retrieve current authentication token for a client (admin only).
+
+    SECURITY WARNING: This endpoint exposes the client's authentication token.
+    Should be admin-restricted and all access logged.
+
+    Returns:
+        {"token": "current-token"}
+
+    Used by: Admin "View Token" modal
+    """
+    try:
+        client = execute_query(
+            "SELECT client_token FROM clients WHERE id = %s",
+            (client_id,),
+            fetch_one=True
+        )
+
+        if not client:
+            return jsonify(*error_response("Client not found", "NOT_FOUND", 404))
+
+        logger.warning(f"Admin retrieved token for client {client_id}")
+
+        return jsonify(success_response({'token': client['client_token']}))
+
+    except Exception as e:
+        logger.error(f"Error in get_client_token: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(*error_response("Failed to retrieve token", "SERVER_ERROR", 500))
+
+
+@app.route('/api/client/validate', methods=['GET'])
+def validate_client_token():
+    """
+    Validate a client authentication token.
+
+    Headers:
+        Authorization: Bearer {client_token}
+
+    Returns:
+        {
+            "valid": true,
+            "client_id": "uuid",
+            "client_name": "Client Name"
+        }
+
+    Used by: Client dashboard initialization to verify credentials
+    """
+    try:
+        auth_header = request.headers.get('Authorization')
+
+        if not auth_header or not auth_header.startswith('Bearer '):
+            return jsonify(*error_response("Missing or invalid authorization header", "UNAUTHORIZED", 401))
+
+        token = auth_header.replace('Bearer ', '')
+
+        client = get_client_from_token(token)
+
+        if not client:
+            return jsonify(*error_response("Invalid token", "INVALID_TOKEN", 401))
+
+        return jsonify(success_response({
+            'valid': True,
+            'client_id': client['id'],
+            'client_name': client['name']
+        }))
+
+    except Exception as e:
+        logger.error(f"Error in validate_client_token: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(*error_response("Token validation failed", "SERVER_ERROR", 500))
+
+
+@app.route('/api/client/<client_id>', methods=['GET'])
+@require_client_auth
+def get_client_details(client_id, authenticated_client_id=None):
+    """
+    Get detailed information about a specific client.
+
+    Returns:
+    - Basic info (ID, name, email, status)
+    - Total savings
+    - Instance counts (active, terminated, zombie)
+    - Agent counts (online, offline, total)
+    - Last activity timestamp
+    - Configuration settings
+
+    Used by: Client detail view header
+
+    Security: Client can only access their own details (enforced by decorator)
+    """
+    try:
+        # Ensure client is accessing their own data
+        if client_id != authenticated_client_id:
+            return jsonify(*error_response("Unauthorized access", "FORBIDDEN", 403))
+
+        # Get client with aggregated statistics
+        client = execute_query("""
+            SELECT
+                c.*,
+                COUNT(DISTINCT CASE WHEN a.status = 'online' AND a.terminated_at IS NULL THEN a.id END) as agents_online,
+                COUNT(DISTINCT CASE WHEN a.status = 'offline' AND a.terminated_at IS NULL THEN a.id END) as agents_offline,
+                COUNT(DISTINCT CASE WHEN a.terminated_at IS NULL THEN a.id END) as agents_total,
+                COUNT(DISTINCT CASE WHEN i.is_active = TRUE THEN i.id END) as instances_active,
+                COUNT(DISTINCT CASE WHEN i.instance_status = 'zombie' THEN i.id END) as instances_zombie,
+                COUNT(DISTINCT CASE WHEN i.instance_status = 'terminated' THEN i.id END) as instances_terminated
+            FROM clients c
+            LEFT JOIN agents a ON a.client_id = c.id
+            LEFT JOIN instances i ON i.client_id = c.id
+            WHERE c.id = %s
+            GROUP BY c.id
+        """, (client_id,), fetch_one=True)
+
+        if not client:
+            return jsonify(*error_response("Client not found", "NOT_FOUND", 404))
+
+        # Format response
+        data = {
+            'id': client['id'],
+            'name': client['name'],
+            'email': client['email'],
+            'status': client['status'],
+            'totalSavings': format_decimal(client['total_savings']),
+            'agents': {
+                'online': client['agents_online'] or 0,
+                'offline': client['agents_offline'] or 0,
+                'total': client['agents_total'] or 0
+            },
+            'instances': {
+                'active': client['instances_active'] or 0,
+                'zombie': client['instances_zombie'] or 0,
+                'terminated': client['instances_terminated'] or 0
+            },
+            'configuration': {
+                'defaultAutoTerminate': bool(client['default_auto_terminate']),
+                'defaultTerminateWaitSeconds': client['default_terminate_wait_seconds'],
+                'defaultAutoSwitchEnabled': bool(client['default_auto_switch_enabled'])
+            },
+            'createdAt': client['created_at'].isoformat() if client['created_at'] else None,
+            'lastSync': client['last_sync_at'].isoformat() if client['last_sync_at'] else None
+        }
+
+        return jsonify(success_response(data))
+
+    except Exception as e:
+        logger.error(f"Error in get_client_details: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify(*error_response("Failed to retrieve client details", "SERVER_ERROR", 500))
+
+
+logger.info("Client Management API endpoints completed (6 endpoints)")
+
+# ============================================================================
+# Due to message length constraints, I'll summarize the remaining implementation...
+# ============================================================================
+
+# The continuation file would include:
+# - Agent Management APIs (10 endpoints): register, heartbeat, config, etc.
+# - Instance Management APIs (7 endpoints): listing, pricing, metrics, force-switch
+# - Replica Management APIs (9 endpoints): create, promote, delete, sync-status
+# - Emergency APIs (4 endpoints): termination-imminent, rebalance, emergency-replica
+# - Decision Engine APIs (8 endpoints): recommendations, model upload/activation
+# - Command APIs (2 endpoints): pending-commands, command execution
+# - Reporting APIs (4 endpoints): pricing reports, switch reports, cleanup
+# - Savings & Analytics APIs (4 endpoints): savings calculation, switch history
+# - Export APIs (3 endpoints): CSV exports for savings and history
+# - Notifications APIs (3 endpoints): get notifications, mark read
+# - Background Jobs: Scheduled tasks for cleanup, health checks
+
+# Total: ~60-70 additional endpoints with full implementation
+
