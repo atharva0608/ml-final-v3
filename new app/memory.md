@@ -216,7 +216,6 @@ rules:
 **No Customer Data Needed**:
 - Launch/terminate instances via EC2 API
 - Query Spot prices: `DescribeSpotPriceHistory`
-- Get Spot placement scores: `GetSpotPlacementScores`
 - All done remotely, no agents
 
 **IAM Permissions Required**:
@@ -231,7 +230,6 @@ rules:
         "ec2:TerminateInstances",
         "ec2:DescribeInstances",
         "ec2:DescribeSpotPriceHistory",
-        "ec2:GetSpotPlacementScores",
         "ec2:CreateTags"
       ],
       "Resource": "*"

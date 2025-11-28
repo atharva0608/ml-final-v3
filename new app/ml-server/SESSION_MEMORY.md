@@ -19,10 +19,14 @@
 - Support for Spot interruption prediction, resource forecasting
 
 ### 2. Decision Engine (Pluggable Architecture)
-- **Spot Optimizer Engine**: Select optimal Spot instances using AWS Spot Advisor data
-- **Bin Packing Engine**: Consolidate workloads to minimize node count
-- **Rightsizing Engine**: Match instance sizes to actual workload requirements
+- **Spot Optimizer Engine**: Select optimal Spot instances using AWS Spot Advisor data (NOT SPS scores)
+- **Bin Packing Engine**: Consolidate workloads to minimize node count (Tetris algorithm)
+- **Rightsizing Engine**: Match instance sizes to actual workload requirements (deterministic lookup)
 - **Office Hours Scheduler**: Auto-scale dev/staging environments
+- **Ghost Probe Scanner**: Detect zombie EC2 instances not in K8s clusters
+- **Zombie Volume Cleanup**: Identify and remove unattached EBS volumes
+- **Network Optimizer**: Cross-AZ traffic affinity optimization
+- **OOMKilled Remediation**: Detect and auto-fix OOMKilled pods
 - All engines pluggable with fixed input/output contracts
 
 ### 3. Pricing Data Management (Backend + Database)
@@ -299,10 +303,14 @@ ml-server/
 ├── decision_engine/
 │   ├── __init__.py
 │   ├── base_engine.py         # Base class for all engines
-│   ├── spot_optimizer.py      # Spot instance selection engine
-│   ├── bin_packing.py         # Workload consolidation engine
-│   ├── rightsizing.py         # Instance rightsizing engine
+│   ├── spot_optimizer.py      # Spot instance selection (AWS Spot Advisor, NO SPS)
+│   ├── bin_packing.py         # Workload consolidation (Tetris algorithm)
+│   ├── rightsizing.py         # Instance rightsizing (deterministic lookup)
 │   ├── scheduler.py           # Office hours scheduler
+│   ├── ghost_probe.py         # Zombie EC2 instance scanner
+│   ├── volume_cleanup.py      # Zombie volume cleanup
+│   ├── network_optimizer.py   # Cross-AZ traffic optimization
+│   ├── oomkilled_remediation.py  # OOMKilled pod auto-fix
 │   └── uploaded/              # Uploaded engine files (.py)
 ├── ml-frontend/               # React frontend
 │   ├── package.json
@@ -423,7 +431,7 @@ POST /api/v1/ml/engines/upload
     - file: .py file
     - engine_name: string
     - engine_version: string
-    - engine_type: string (spot_optimizer, bin_packing, rightsizing)
+    - engine_type: string (spot_optimizer, bin_packing, rightsizing, scheduler, ghost_probe, volume_cleanup, network_optimizer, oomkilled_remediation)
     - config: JSON (optional)
   → Returns: {engine_id, status}
 
@@ -1062,6 +1070,303 @@ networks:
 5. Frontend (WebSocket stream):
    - Live updates on dashboard
    - Shows prediction in real-time chart
+```
+
+---
+
+## 🎯 CAST AI Decision Engines (Complete Feature Set)
+
+### Overview
+All decision engines live in the ML Server for centralized decision-making. The ML Server analyzes cluster state, pricing data, and workload patterns, then returns recommendations to the Core Platform for execution.
+
+**Key Principle**: ML Server makes ALL decisions, Core Platform executes them via remote APIs.
+
+---
+
+### 1. Spot Optimizer Engine
+
+**Purpose**: Select optimal Spot instances using AWS Spot Advisor public data
+
+**Data Sources**:
+- AWS Spot Advisor JSON: `https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json`
+- Historical Spot prices from `spot_prices` table
+- On-Demand prices from `on_demand_prices` table
+- **NO SPS (Spot Placement Scores)** - User explicitly requested NOT to use
+
+**Risk Score Formula** (0.0 = unsafe, 1.0 = safe):
+```
+Risk Score = (0.60 × Public_Rate_Score) +
+             (0.25 × Volatility_Score) +
+             (0.10 × Gap_Score) +
+             (0.05 × Time_Score)
+
+Where:
+- Public_Rate_Score: From AWS Spot Advisor (<5% = 1.0, >20% = 0.0)
+- Volatility_Score: Price stability over last 7 days
+- Gap_Score: Current price vs On-Demand (lower = better)
+- Time_Score: Hour of day (off-peak hours = higher score)
+```
+
+**Output**:
+- Top 5 Spot instance recommendations ranked by risk score
+- Fallback On-Demand instances if all Spot options too risky
+- Estimated monthly savings per recommendation
+
+**File**: `decision_engine/spot_optimizer.py`
+
+---
+
+### 2. Bin Packing Engine (Tetris Algorithm)
+
+**Purpose**: Consolidate workloads to minimize node count and maximize resource utilization
+
+**Algorithm**:
+1. Analyze current pod placement across nodes
+2. Calculate node utilization (CPU + memory)
+3. Identify underutilized nodes (< 50% allocated)
+4. Simulate pod migrations to consolidate workloads
+5. Return drain plan for empty/underutilized nodes
+
+**Constraints**:
+- Respect pod anti-affinity rules
+- Maintain node diversity (AZ spread)
+- Ensure sufficient capacity for pod migrations
+- Graceful drain with 90-second grace period
+
+**Output**:
+- List of nodes to drain and terminate
+- Pod migration plan (source node → target node)
+- Estimated savings from reduced node count
+
+**File**: `decision_engine/bin_packing.py`
+
+---
+
+### 3. Rightsizing Engine (Deterministic Lookup)
+
+**Purpose**: Match instance sizes to actual workload requirements
+
+**Approach**: Deterministic lookup tables (NOT ML-based for Day Zero)
+
+**Lookup Table Example**:
+```python
+# If pod requests 2 CPU + 4GB RAM:
+INSTANCE_LOOKUP = {
+    (2.0, 4.0): ["t3.large", "t3a.large", "m5.large"],
+    (4.0, 8.0): ["m5.xlarge", "c5.xlarge", "t3.xlarge"],
+    (8.0, 16.0): ["m5.2xlarge", "c5.2xlarge"],
+    # ...
+}
+```
+
+**Analysis**:
+1. Query actual pod resource usage (last 7 days avg)
+2. Compare actual usage vs requested resources
+3. If actual < 50% of requested, recommend downsize
+4. If actual > 80% of requested, recommend upsize
+5. Use lookup table to find matching instance types
+
+**Output**:
+- Oversized instances with downsize recommendations
+- Undersized instances with upsize recommendations
+- Estimated cost savings from rightsizing
+
+**File**: `decision_engine/rightsizing.py`
+
+---
+
+### 4. Office Hours Scheduler
+
+**Purpose**: Auto-scale dev/staging environments based on time schedules
+
+**Configuration**:
+```json
+{
+  "environment": "dev",
+  "office_hours": {
+    "weekdays": {"start": "08:00", "end": "18:00"},
+    "weekends": {"enabled": false}
+  },
+  "scale_down_replicas": 0,
+  "scale_down_instance_count": 1  // Minimum nodes
+}
+```
+
+**Logic**:
+- Check current time (UTC)
+- If outside office hours:
+  - Scale deployments to 0 replicas (or configured minimum)
+  - Drain and terminate excess nodes
+- If inside office hours:
+  - Scale deployments back to original replicas
+  - Launch nodes as needed
+
+**Output**:
+- Scale commands for deployments
+- Node termination/launch plan
+- Estimated monthly savings
+
+**File**: `decision_engine/scheduler.py`
+
+---
+
+### 5. Ghost Probe Scanner
+
+**Purpose**: Detect zombie EC2 instances not in Kubernetes clusters
+
+**Day Zero Capability**: Works immediately without customer historical data
+
+**Algorithm**:
+1. Core Platform sends list of running EC2 instances from customer account
+2. Core Platform sends list of K8s nodes from cluster
+3. ML Server compares: EC2 instances vs K8s nodes
+4. Identifies "ghost" instances: EC2 running but NOT in K8s
+
+**Ghost Detection**:
+```python
+ec2_instances = {i-1234, i-5678, i-9012}
+k8s_nodes = {i-1234, i-5678}
+ghost_instances = ec2_instances - k8s_nodes  # {i-9012}
+```
+
+**Safety**:
+- 24-hour grace period before flagging as ghost
+- Exclude instances with specific tags (e.g., `cloudoptim:ignore`)
+- Manual approval before termination
+
+**Output**:
+- List of ghost instances with metadata
+- Termination recommendations
+- Estimated cost savings from cleanup
+
+**File**: `decision_engine/ghost_probe.py`
+
+---
+
+### 6. Zombie Volume Cleanup
+
+**Purpose**: Identify and remove unattached EBS volumes
+
+**Algorithm**:
+1. Core Platform sends list of all EBS volumes
+2. Filter volumes with status = "available" (unattached)
+3. Check volume age (last attach time)
+4. If unattached > 7 days, flag as zombie
+
+**Safety Checks**:
+- Exclude volumes with snapshots (might be backups)
+- Exclude volumes with specific tags (e.g., `backup:true`)
+- Grace period: 7 days minimum
+- Alert customer before deletion
+
+**Output**:
+- List of zombie volumes with age and size
+- Deletion recommendations
+- Estimated monthly savings from storage cleanup
+
+**File**: `decision_engine/volume_cleanup.py`
+
+---
+
+### 7. Network Optimizer (Cross-AZ Traffic Affinity)
+
+**Purpose**: Optimize cross-AZ data transfer costs by co-locating pods with their dependencies
+
+**Problem**: AWS charges $0.01/GB for cross-AZ traffic (ingress/egress between AZs)
+
+**Analysis**:
+1. Core Platform sends pod communication matrix (pod A → pod B traffic volume)
+2. Identify high-traffic pod pairs
+3. Check if pods are in different AZs
+4. Recommend pod re-scheduling to same AZ
+
+**Algorithm**:
+```python
+# If pod-api (us-east-1a) → pod-db (us-east-1b) = 100GB/day
+# Cost: 100GB × $0.01 = $1/day = $30/month
+# Recommendation: Move pod-db to us-east-1a (same AZ as pod-api)
+```
+
+**Constraints**:
+- Maintain AZ diversity for high-availability workloads
+- Only optimize for pods with > 10GB/day cross-AZ traffic
+
+**Output**:
+- Pod affinity rules to add
+- Estimated monthly savings from reduced cross-AZ traffic
+
+**File**: `decision_engine/network_optimizer.py`
+
+---
+
+### 8. OOMKilled Auto-Remediation
+
+**Purpose**: Detect OOMKilled pods and automatically increase memory limits
+
+**Detection**:
+1. Core Platform sends pod events (last 24 hours)
+2. Filter events with reason = "OOMKilled"
+3. Analyze pod memory requests vs actual usage
+
+**Auto-Fix Logic**:
+```python
+if pod.status == "OOMKilled":
+    current_memory = pod.spec.resources.requests.memory
+    recommended_memory = current_memory × 1.5  # 50% increase
+    return UpdateDeployment(memory=recommended_memory)
+```
+
+**Safety**:
+- Maximum memory increase: 2x current limit
+- If OOMKilled > 3 times, escalate to manual review
+- Monitor memory usage after fix
+
+**Output**:
+- Deployment update commands with new memory limits
+- OOMKilled pod history
+- Recommended memory settings
+
+**File**: `decision_engine/oomkilled_remediation.py`
+
+---
+
+### Decision Engine API Endpoints
+
+All engines are invoked via ML Server API:
+
+```http
+POST /api/v1/ml/decision/spot-optimize
+POST /api/v1/ml/decision/bin-pack
+POST /api/v1/ml/decision/rightsize
+POST /api/v1/ml/decision/schedule
+POST /api/v1/ml/decision/ghost-probe
+POST /api/v1/ml/decision/volume-cleanup
+POST /api/v1/ml/decision/network-optimize
+POST /api/v1/ml/decision/oomkilled-remediate
+```
+
+**Common Request Schema**:
+```json
+{
+  "request_id": "req-12345",
+  "cluster_id": "cluster-abc",
+  "decision_type": "spot_optimize",
+  "current_state": { /* ClusterState */ },
+  "requirements": { /* Decision-specific params */ },
+  "constraints": { /* Safety constraints */ }
+}
+```
+
+**Common Response Schema**:
+```json
+{
+  "request_id": "req-12345",
+  "decision_type": "spot_optimize",
+  "recommendations": [ /* List of recommendations */ ],
+  "confidence_score": 0.95,
+  "estimated_savings": 450.00,
+  "execution_plan": [ /* Step-by-step execution */ ]
+}
 ```
 
 ---

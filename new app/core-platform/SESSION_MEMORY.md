@@ -27,10 +27,11 @@
 
 ### 3. API & Orchestration
 - Main REST API for all operations
-- Coordinates with ML Server for decisions
-- Executes optimization plans remotely
+- **Coordinates with ML Server for ALL decisions** (Core Platform does NOT make optimization decisions)
+- Executes optimization plans remotely (receives plans from ML Server)
 - Handles AWS API interactions (EC2, SQS, EventBridge)
 - Remote Kubernetes API interactions
+- **Architecture**: Core Platform collects data → ML Server makes decisions → Core Platform executes
 
 ### 4. Admin Frontend
 - Real-time cost monitoring dashboard
@@ -41,11 +42,12 @@
 - Gap filling tool UI
 
 ### 5. Decision Execution Engine
-- Receives recommendations from ML Server
-- Validates safety checks
-- Executes optimization plans via remote K8s API
+- **Receives ALL recommendations from ML Server** (no local decision logic)
+- Validates safety checks before execution
+- Executes optimization plans via remote K8s API + AWS EC2 API
 - Handles rollback scenarios
 - Monitors execution status
+- **Key**: Core Platform is the "executor", ML Server is the "brain"
 
 ### 6. Event Processing (Agentless)
 - **SQS Queue Polling** for Spot interruption warnings (every 5 seconds)
@@ -190,7 +192,6 @@ Core Platform → AWS EC2 API: Launch/terminate instances
 - `TerminateInstances` - Terminate old instances
 - `DescribeInstances` - Query instance details
 - `DescribeSpotPriceHistory` - Get historical Spot prices
-- `GetSpotPlacementScores` - Get interruption risk scores
 - `CreateTags` - Tag instances with cluster info
 
 **IAM Permissions Required**:
@@ -205,7 +206,6 @@ Core Platform → AWS EC2 API: Launch/terminate instances
         "ec2:TerminateInstances",
         "ec2:DescribeInstances",
         "ec2:DescribeSpotPriceHistory",
-        "ec2:GetSpotPlacementScores",
         "ec2:CreateTags"
       ],
       "Resource": "*"
@@ -288,16 +288,15 @@ core-platform/
 │   ├── schemas.py             # Pydantic schemas
 │   └── seed_data.sql          # Initial data
 ├── services/
-│   ├── optimizer_service.py   # Orchestrates optimization
-│   ├── executor_service.py    # Executes optimization plans
+│   ├── optimizer_service.py   # Orchestrates optimization (calls ML Server)
+│   ├── executor_service.py    # Executes optimization plans from ML Server
 │   ├── spot_handler.py        # Handles Spot interruptions
 │   ├── k8s_remote_client.py   # Remote Kubernetes API client (NO AGENT)
 │   ├── eventbridge_poller.py  # SQS poller for Spot warnings
 │   ├── aws_client.py          # AWS EC2 API client
-│   ├── ml_client.py           # ML Server client
+│   ├── ml_client.py           # ML Server client (sends requests, receives decisions)
 │   ├── metrics_collector.py   # Collects cluster metrics via remote K8s API
-│   ├── ghost_probe_scanner.py # Scans for zombie EC2 instances
-│   └── volume_cleanup.py      # Zombie volume cleanup
+│   ├── data_collector.py      # Collects EC2/EBS data for ML Server analysis
 ├── admin-frontend/
 │   ├── package.json
 │   ├── src/
