@@ -367,6 +367,445 @@ core-platform/
 
 ---
 
+## 📦 Installation & Setup
+
+### System Requirements
+
+**Operating System**:
+- Ubuntu 22.04 LTS or 24.04 LTS (recommended)
+- Amazon Linux 2023
+- Other Linux distributions (with adjustments)
+
+**Hardware Minimum**:
+- CPU: 4 cores (8 cores recommended for production)
+- RAM: 16GB (32GB recommended for production)
+- Disk: 100GB SSD (200GB+ for production with metrics)
+
+**Software Prerequisites**:
+- Python 3.10+ (3.11 recommended)
+- PostgreSQL 15+
+- Redis 7+
+- Node.js 20.x LTS (for admin frontend)
+- Docker (optional, for MySQL 8.0 compatibility from old setup)
+- AWS CLI v2
+- kubectl (for remote Kubernetes API access)
+
+---
+
+###Installation Script
+
+**Automated Setup** (Ubuntu 22.04/24.04):
+
+```bash
+#!/bin/bash
+# Core Platform Installation Script
+# Based on old app/old-version/central-server/scripts/setup.sh
+
+set -e
+
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log() { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"; }
+
+log "Starting Core Platform Installation..."
+
+# Update system
+log "Step 1: Updating system packages..."
+sudo apt-get update -y
+sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+
+# Install system dependencies
+log "Step 2: Installing system dependencies..."
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    python3.11 python3.11-venv python3-pip \
+    postgresql-15 postgresql-contrib \
+    redis-server \
+    nginx \
+    curl wget git unzip jq \
+    build-essential libpq-dev
+
+# Install Docker (for MySQL 8.0 compatibility from old setup)
+log "Step 3: Installing Docker..."
+if ! command -v docker &> /dev/null; then
+    curl -fsSL https://get.docker.com | sh
+    sudo usermod -aG docker $USER
+fi
+
+# Install Node.js 20.x LTS
+log "Step 4: Installing Node.js 20.x LTS..."
+if ! command -v node &> /dev/null; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+fi
+
+# Install AWS CLI v2
+log "Step 5: Installing AWS CLI v2..."
+if ! command -v aws &> /dev/null; then
+    cd /tmp
+    curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    unzip -q awscliv2.zip
+    sudo ./aws/install
+    rm -rf aws awscliv2.zip
+fi
+
+# Install kubectl
+log "Step 6: Installing kubectl..."
+if ! command -v kubectl &> /dev/null; then
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+    rm kubectl
+fi
+
+# Create directory structure
+log "Step 7: Creating directory structure..."
+APP_DIR="/opt/core-platform"
+sudo mkdir -p $APP_DIR
+sudo chown $USER:$USER $APP_DIR
+
+mkdir -p $APP_DIR/api
+mkdir -p $APP_DIR/services
+mkdir -p $APP_DIR/database
+mkdir -p $APP_DIR/admin-frontend
+mkdir -p $APP_DIR/scripts
+mkdir -p /var/log/core-platform
+
+# Setup Python virtual environment
+log "Step 8: Setting up Python environment..."
+cd $APP_DIR/api
+python3.11 -m venv venv
+source venv/bin/activate
+
+# Install Python dependencies
+cat > requirements.txt << 'EOF'
+# API Framework (from old app/old-version/central-server/backend/requirements.txt)
+Flask==3.0.0
+flask-cors==4.0.0
+gunicorn==21.2.0
+
+# Database
+mysql-connector-python==8.2.0
+
+# Scheduler
+APScheduler==3.10.4
+
+# Validation
+marshmallow==3.20.1
+
+# AWS
+boto3==1.28.25
+botocore==1.31.25
+
+# Kubernetes (for remote API access)
+kubernetes==27.2.0
+
+# HTTP Client
+requests==2.31.0
+httpx==0.24.1
+
+# Environment
+python-dotenv==1.0.0
+
+# Monitoring
+prometheus-client==0.17.1
+python-json-logger==2.0.7
+
+# Testing
+pytest==7.4.0
+EOF
+
+pip install --upgrade pip
+pip install -r requirements.txt
+
+log "Python dependencies installed"
+deactivate
+
+# Setup PostgreSQL database
+log "Step 9: Configuring PostgreSQL..."
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+
+sudo -u postgres psql << PSQL_EOF
+CREATE DATABASE cloudoptim;
+CREATE USER cloudoptim WITH ENCRYPTED PASSWORD 'cloudoptim_password';
+GRANT ALL PRIVILEGES ON DATABASE cloudoptim TO cloudoptim;
+\c cloudoptim
+GRANT ALL ON SCHEMA public TO cloudoptim;
+PSQL_EOF
+
+log "PostgreSQL database created"
+
+# Setup Redis
+log "Step 10: Configuring Redis..."
+sudo systemctl start redis-server
+sudo systemctl enable redis-server
+
+# Create environment configuration
+log "Step 11: Creating environment configuration..."
+cat > $APP_DIR/api/.env << 'ENV_EOF'
+# Core Platform Configuration
+CENTRAL_SERVER_HOST=0.0.0.0
+CENTRAL_SERVER_PORT=8000
+CENTRAL_SERVER_WORKERS=4
+
+# Database
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=cloudoptim
+DB_USER=cloudoptim
+DB_PASSWORD=cloudoptim_password
+
+# Redis
+REDIS_HOST=localhost
+REDIS_PORT=6379
+
+# ML Server Connection
+ML_SERVER_URL=http://ml-server:8001
+ML_SERVER_API_KEY=change_this_api_key
+
+# AWS
+AWS_REGION=us-east-1
+
+# EventBridge/SQS Polling
+SQS_POLL_INTERVAL_SECONDS=5
+SQS_MAX_MESSAGES=10
+
+# Remote Kubernetes API
+K8S_API_TIMEOUT_SECONDS=30
+K8S_API_RETRY_ATTEMPTS=3
+
+# Optimization
+OPTIMIZATION_INTERVAL_MINUTES=10
+BIN_PACKING_ENABLED=true
+RIGHTSIZING_ENABLED=true
+OFFICE_HOURS_ENABLED=true
+
+# Feature Flags
+GHOST_PROBE_SCANNER_ENABLED=true
+ZOMBIE_VOLUME_CLEANUP_ENABLED=true
+NETWORK_OPTIMIZATION_ENABLED=true
+OOM_REMEDIATION_ENABLED=true
+ENV_EOF
+
+# Create systemd service
+log "Step 12: Creating systemd service..."
+sudo tee /etc/systemd/system/core-platform-backend.service > /dev/null << SERVICE_EOF
+[Unit]
+Description=Core Platform Backend (FastAPI)
+After=network.target postgresql.service redis-server.service
+Wants=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$APP_DIR/api
+EnvironmentFile=$APP_DIR/api/.env
+ExecStart=$APP_DIR/api/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/core-platform/backend.log
+StandardError=append:/var/log/core-platform/backend-error.log
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable core-platform-backend
+
+# Setup frontend
+log "Step 13: Setting up admin frontend..."
+cd $APP_DIR/admin-frontend
+npm install
+npm run build
+
+# Configure Nginx
+sudo tee /etc/nginx/sites-available/core-platform << 'NGINX_EOF'
+server {
+    listen 80 default_server;
+    server_name _;
+
+    root /opt/core-platform/admin-frontend/dist;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://localhost:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+NGINX_EOF
+
+sudo ln -sf /etc/nginx/sites-available/core-platform /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+
+# Create helper scripts
+log "Step 14: Creating helper scripts..."
+
+cat > $APP_DIR/scripts/start.sh << 'SCRIPT_EOF'
+#!/bin/bash
+echo "Starting Core Platform..."
+sudo systemctl start core-platform-backend
+sudo systemctl start nginx
+echo "Core Platform started!"
+SCRIPT_EOF
+chmod +x $APP_DIR/scripts/start.sh
+
+cat > $APP_DIR/scripts/status.sh << 'SCRIPT_EOF'
+#!/bin/bash
+echo "=== Core Platform Status ==="
+sudo systemctl status core-platform-backend --no-pager
+echo ""
+curl -s http://localhost:8000/health | jq .
+SCRIPT_EOF
+chmod +x $APP_DIR/scripts/status.sh
+
+log "============================================"
+log "Core Platform Installation Complete!"
+log "============================================"
+log ""
+log "✓ Backend API: http://localhost:8000"
+log "✓ Admin Frontend: http://localhost:80"
+log "✓ Database: PostgreSQL (cloudoptim)"
+log "✓ Cache: Redis"
+log ""
+log "Quick Commands:"
+log "  Start: $APP_DIR/scripts/start.sh"
+log "  Status: $APP_DIR/scripts/status.sh"
+log "============================================"
+```
+
+**Save as**: `install_core_platform.sh`
+
+**Run**:
+```bash
+chmod +x install_core_platform.sh
+./install_core_platform.sh
+```
+
+---
+
+### Version Reference (from old setup scripts)
+
+**Python Packages**:
+```txt
+# API Framework
+Flask==3.0.0
+flask-cors==4.0.0
+gunicorn==21.2.0
+
+# Database
+mysql-connector-python==8.2.0
+
+# Scheduler
+APScheduler==3.10.4
+
+# AWS
+boto3==1.28.25
+
+# Kubernetes
+kubernetes==27.2.0
+```
+
+**System Packages**:
+- Python: 3.10+ (3.11 recommended)
+- PostgreSQL: 15+ or MySQL 8.0 (via Docker)
+- Redis: 7+
+- Node.js: 20.x LTS
+- Nginx: 1.18+
+- kubectl: Latest stable
+- Docker: 24.0+ (optional)
+
+---
+
+### Customer Onboarding Setup
+
+For each customer cluster, configure these components:
+
+#### 1. AWS Setup (Customer AWS Account)
+
+```bash
+# Create IAM role for CloudOptim
+aws iam create-role --role-name CloudOptimRole \
+  --assume-role-policy-document file://trust-policy.json
+
+# Attach required permissions
+aws iam attach-role-policy --role-name CloudOptimRole \
+  --policy-arn arn:aws:iam::aws:policy/AmazonEC2FullAccess
+
+# Create SQS queue for Spot warnings
+aws sqs create-queue --queue-name cloudoptim-spot-warnings
+
+# Create EventBridge rule
+aws events put-rule --name cloudoptim-spot-interruption \
+  --event-pattern '{"source":["aws.ec2"],"detail-type":["EC2 Spot Instance Interruption Warning"]}'
+
+# Connect EventBridge to SQS
+aws events put-targets --rule cloudoptim-spot-interruption \
+  --targets "Id"="1","Arn"="arn:aws:sqs:us-east-1:ACCOUNT:cloudoptim-spot-warnings"
+```
+
+#### 2. Kubernetes Setup (Customer Cluster)
+
+```bash
+# Create service account
+kubectl create serviceaccount cloudoptim -n kube-system
+
+# Apply RBAC (see RBAC section in memory)
+kubectl apply -f cloudoptim-rbac.yaml
+
+# Get service account token
+kubectl create token cloudoptim -n kube-system --duration=87600h
+```
+
+#### 3. Register Customer in Core Platform
+
+```bash
+# Via API
+curl -X POST http://localhost:8000/api/v1/admin/clusters \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cluster_name": "production-eks",
+    "k8s_api_endpoint": "https://EKS-ENDPOINT",
+    "k8s_token": "SERVICE_ACCOUNT_TOKEN",
+    "aws_role_arn": "arn:aws:iam::ACCOUNT:role/CloudOptimRole",
+    "sqs_queue_url": "https://sqs.us-east-1.amazonaws.com/ACCOUNT/cloudoptim-spot-warnings",
+    "region": "us-east-1"
+  }'
+```
+
+---
+
+### Verification
+
+```bash
+# Check services
+sudo systemctl status core-platform-backend
+sudo systemctl status postgresql
+sudo systemctl status redis-server
+
+# Test backend API
+curl http://localhost:8000/health
+
+# Test remote K8s API access (requires cluster registration)
+curl http://localhost:8000/api/v1/k8s/CLUSTER_ID/nodes
+
+# Test ML Server connectivity
+curl http://ML_SERVER_URL/api/v1/ml/health
+```
+
+---
+
 ## 🚀 Deployment Configuration
 
 ### Environment Variables

@@ -821,6 +821,539 @@ GET /api/v1/ml/metrics
 
 ---
 
+## 📦 Installation & Setup
+
+### System Requirements
+
+**Operating System**:
+- Ubuntu 22.04 LTS or 24.04 LTS (recommended)
+- Amazon Linux 2023
+- Other Linux distributions (with adjustments)
+
+**Hardware Minimum**:
+- CPU: 4 cores (8 cores recommended for production)
+- RAM: 8GB (16GB recommended for production)
+- Disk: 50GB SSD (100GB+ for production with pricing data)
+
+**Software Prerequisites**:
+- Python 3.10+ (3.11 recommended)
+- PostgreSQL 15+
+- Redis 7+
+- Node.js 20.x LTS (for frontend)
+- Docker (optional, for containerized deployment)
+- AWS CLI v2 (for Spot Advisor data fetching)
+
+---
+
+### Installation Script
+
+**Automated Setup** (Ubuntu 22.04/24.04):
+
+```bash
+#!/bin/bash
+# ML Server Installation Script
+# Based on old app/old-version/central-server/scripts/setup.sh
+
+set -e
+
+# Colors
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log() { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"; }
+info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+
+log "Starting ML Server Installation..."
+
+# Update system
+log "Step 1: Updating system packages..."
+sudo apt-get update -y
+sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+
+# Install system dependencies
+log "Step 2: Installing system dependencies..."
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    python3.11 \
+    python3.11-venv \
+    python3-pip \
+    postgresql-15 \
+    postgresql-contrib \
+    redis-server \
+    nginx \
+    curl \
+    wget \
+    git \
+    build-essential \
+    libpq-dev \
+    unzip
+
+log "System dependencies installed"
+
+# Install Node.js 20.x LTS (for frontend)
+log "Step 3: Installing Node.js 20.x LTS..."
+if ! command -v node &> /dev/null; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+fi
+log "Node.js $(node --version) installed"
+
+# Install AWS CLI v2
+log "Step 4: Installing AWS CLI v2..."
+if ! command -v aws &> /dev/null; then
+    cd /tmp
+    curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    unzip -q awscliv2.zip
+    sudo ./aws/install > /dev/null 2>&1
+    rm -rf aws awscliv2.zip
+fi
+log "AWS CLI $(aws --version 2>&1 | cut -d' ' -f1) installed"
+
+# Create directory structure
+log "Step 5: Creating directory structure..."
+APP_DIR="/opt/ml-server"
+sudo mkdir -p $APP_DIR
+sudo chown $USER:$USER $APP_DIR
+
+mkdir -p $APP_DIR/backend
+mkdir -p $APP_DIR/models/uploaded
+mkdir -p $APP_DIR/decision_engine/uploaded
+mkdir -p $APP_DIR/ml-frontend
+mkdir -p $APP_DIR/scripts
+mkdir -p /var/log/ml-server
+
+log "Directory structure created"
+
+# Setup Python virtual environment
+log "Step 6: Setting up Python virtual environment..."
+cd $APP_DIR/backend
+python3.11 -m venv venv
+source venv/bin/activate
+
+# Install Python dependencies
+log "Step 7: Installing Python dependencies..."
+cat > requirements.txt << 'EOF'
+# Core ML Libraries (from old app/ml-component/requirements.txt)
+numpy==1.24.3
+pandas==2.0.3
+scikit-learn==1.3.0
+xgboost==1.7.6
+lightgbm==4.0.0
+
+# API Framework
+fastapi==0.103.0
+uvicorn[standard]==0.23.2
+pydantic==2.3.0
+pydantic-settings==2.0.3
+
+# Database
+asyncpg==0.29.0
+sqlalchemy==2.0.21
+alembic==1.12.0
+
+# Redis
+redis==5.0.0
+hiredis==2.2.3
+
+# AWS Integration
+boto3==1.28.25
+botocore==1.31.25
+
+# Monitoring
+prometheus-client==0.17.1
+python-json-logger==2.0.7
+
+# HTTP Client
+httpx==0.24.1
+requests==2.31.0
+
+# Environment
+python-dotenv==1.0.0
+
+# Testing
+pytest==7.4.0
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+EOF
+
+pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+
+log "Python dependencies installed"
+deactivate
+
+# Setup PostgreSQL database
+log "Step 8: Configuring PostgreSQL..."
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+
+# Create database and user
+sudo -u postgres psql << PSQL_EOF
+CREATE DATABASE ml_server;
+CREATE USER ml_server WITH ENCRYPTED PASSWORD 'ml_server_password';
+GRANT ALL PRIVILEGES ON DATABASE ml_server TO ml_server;
+\c ml_server
+GRANT ALL ON SCHEMA public TO ml_server;
+PSQL_EOF
+
+log "PostgreSQL database created"
+
+# Setup Redis
+log "Step 9: Configuring Redis..."
+sudo systemctl start redis-server
+sudo systemctl enable redis-server
+
+# Update Redis configuration for production
+sudo tee -a /etc/redis/redis.conf > /dev/null << 'REDIS_EOF'
+maxmemory 2gb
+maxmemory-policy allkeys-lru
+REDIS_EOF
+
+sudo systemctl restart redis-server
+log "Redis configured"
+
+# Create environment configuration
+log "Step 10: Creating environment configuration..."
+cat > $APP_DIR/backend/.env << 'ENV_EOF'
+# ML Server Configuration
+ML_SERVER_HOST=0.0.0.0
+ML_SERVER_PORT=8001
+ML_SERVER_WORKERS=4
+
+# Database
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=ml_server
+DB_USER=ml_server
+DB_PASSWORD=ml_server_password
+DB_POOL_SIZE=10
+
+# Redis
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_CACHE_TTL=3600
+
+# AWS (for Spot Advisor data fetching)
+AWS_REGION=us-east-1
+SPOT_ADVISOR_URL=https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json
+
+# Models
+MODEL_UPLOAD_DIR=/opt/ml-server/models/uploaded
+DECISION_ENGINE_DIR=/opt/ml-server/decision_engine/uploaded
+MAX_MODEL_FILE_SIZE_MB=500
+
+# Gap Filler
+GAP_FILLER_ENABLED=true
+GAP_FILLER_DEFAULT_LOOKBACK_DAYS=15
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+ENV_EOF
+
+log "Environment configuration created"
+
+# Create systemd service
+log "Step 11: Creating systemd service..."
+sudo tee /etc/systemd/system/ml-server-backend.service > /dev/null << SERVICE_EOF
+[Unit]
+Description=ML Server Backend (FastAPI)
+After=network.target postgresql.service redis-server.service
+Wants=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$APP_DIR/backend
+EnvironmentFile=$APP_DIR/backend/.env
+ExecStart=$APP_DIR/backend/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001 --workers 4
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/ml-server/backend.log
+StandardError=append:/var/log/ml-server/backend-error.log
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable ml-server-backend
+
+log "Systemd service created"
+
+# Setup frontend
+log "Step 12: Setting up React frontend..."
+cd $APP_DIR/ml-frontend
+
+# Install frontend dependencies
+npm install
+
+# Build frontend
+npm run build
+
+# Configure Nginx
+sudo tee /etc/nginx/sites-available/ml-server << 'NGINX_EOF'
+server {
+    listen 3001 default_server;
+    server_name _;
+
+    root /opt/ml-server/ml-frontend/dist;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://localhost:8001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+NGINX_EOF
+
+sudo ln -sf /etc/nginx/sites-available/ml-server /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+
+log "Frontend configured"
+
+# Create helper scripts
+log "Step 13: Creating helper scripts..."
+
+# Start script
+cat > $APP_DIR/scripts/start.sh << 'SCRIPT_EOF'
+#!/bin/bash
+echo "Starting ML Server..."
+sudo systemctl start ml-server-backend
+sudo systemctl start nginx
+echo "ML Server started!"
+SCRIPT_EOF
+chmod +x $APP_DIR/scripts/start.sh
+
+# Stop script
+cat > $APP_DIR/scripts/stop.sh << 'SCRIPT_EOF'
+#!/bin/bash
+echo "Stopping ML Server..."
+sudo systemctl stop ml-server-backend
+echo "ML Server stopped!"
+SCRIPT_EOF
+chmod +x $APP_DIR/scripts/stop.sh
+
+# Status script
+cat > $APP_DIR/scripts/status.sh << 'SCRIPT_EOF'
+#!/bin/bash
+echo "=== ML Server Status ==="
+sudo systemctl status ml-server-backend --no-pager
+echo ""
+echo "=== Health Check ==="
+curl -s http://localhost:8001/api/v1/ml/health | jq .
+SCRIPT_EOF
+chmod +x $APP_DIR/scripts/status.sh
+
+# Fetch Spot Advisor data script
+cat > $APP_DIR/scripts/fetch_spot_advisor.sh << 'SCRIPT_EOF'
+#!/bin/bash
+echo "Fetching AWS Spot Advisor data..."
+curl -s https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json \
+    | jq . > /tmp/spot-advisor-data.json
+echo "Spot Advisor data saved to /tmp/spot-advisor-data.json"
+SCRIPT_EOF
+chmod +x $APP_DIR/scripts/fetch_spot_advisor.sh
+
+log "Helper scripts created"
+
+# Installation complete
+log "============================================"
+log "ML Server Installation Complete!"
+log "============================================"
+log ""
+log "✓ Backend: FastAPI on port 8001"
+log "✓ Frontend: React on port 3001"
+log "✓ Database: PostgreSQL (ml_server)"
+log "✓ Cache: Redis"
+log ""
+log "Quick Commands:"
+log "  Start:  $APP_DIR/scripts/start.sh"
+log "  Stop:   $APP_DIR/scripts/stop.sh"
+log "  Status: $APP_DIR/scripts/status.sh"
+log ""
+log "Backend API: http://localhost:8001/api/v1/ml/"
+log "Frontend UI: http://localhost:3001"
+log "Health Check: http://localhost:8001/api/v1/ml/health"
+log "============================================"
+```
+
+**Save as**: `install_ml_server.sh`
+
+**Run**:
+```bash
+chmod +x install_ml_server.sh
+./install_ml_server.sh
+```
+
+---
+
+### Manual Installation Steps
+
+For manual installation or troubleshooting, follow these steps:
+
+#### 1. Install System Dependencies
+
+```bash
+# Ubuntu 22.04/24.04
+sudo apt-get update
+sudo apt-get install -y \
+    python3.11 python3.11-venv python3-pip \
+    postgresql-15 postgresql-contrib \
+    redis-server \
+    nginx \
+    curl wget git unzip \
+    build-essential libpq-dev
+
+# Node.js 20.x LTS
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# AWS CLI v2
+cd /tmp
+curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip -q awscliv2.zip
+sudo ./aws/install
+```
+
+#### 2. Setup Python Environment
+
+```bash
+# Create virtual environment
+python3.11 -m venv /opt/ml-server/backend/venv
+source /opt/ml-server/backend/venv/bin/activate
+
+# Install dependencies (see requirements.txt above)
+pip install -r requirements.txt
+```
+
+#### 3. Setup Database
+
+```bash
+# Start PostgreSQL
+sudo systemctl start postgresql
+
+# Create database
+sudo -u postgres psql << EOF
+CREATE DATABASE ml_server;
+CREATE USER ml_server WITH ENCRYPTED PASSWORD 'ml_server_password';
+GRANT ALL PRIVILEGES ON DATABASE ml_server TO ml_server;
+\c ml_server
+GRANT ALL ON SCHEMA public TO ml_server;
+EOF
+
+# Run migrations
+cd /opt/ml-server/backend
+alembic upgrade head
+```
+
+#### 4. Setup Redis
+
+```bash
+# Start Redis
+sudo systemctl start redis-server
+
+# Configure for production
+echo "maxmemory 2gb" | sudo tee -a /etc/redis/redis.conf
+echo "maxmemory-policy allkeys-lru" | sudo tee -a /etc/redis/redis.conf
+sudo systemctl restart redis-server
+```
+
+#### 5. Configure Environment
+
+Create `/opt/ml-server/backend/.env` (see environment variables section below)
+
+#### 6. Start Services
+
+```bash
+# Start backend
+sudo systemctl start ml-server-backend
+
+# Build and serve frontend
+cd /opt/ml-server/ml-frontend
+npm install
+npm run build
+sudo systemctl start nginx
+```
+
+---
+
+### Version Reference (from old setup scripts)
+
+**Python Packages**:
+```txt
+# ML Libraries
+numpy==1.24.3
+pandas==2.0.3
+scikit-learn==1.3.0
+xgboost==1.7.6
+lightgbm==4.0.0
+
+# API Framework
+fastapi==0.103.0
+uvicorn==0.23.2
+pydantic==2.3.0
+
+# Database
+asyncpg==0.29.0
+sqlalchemy==2.0.21
+alembic==1.12.0
+
+# AWS
+boto3==1.28.25
+
+# Redis
+redis==5.0.0
+```
+
+**System Packages**:
+- Python: 3.10+ (3.11 recommended)
+- PostgreSQL: 15+
+- Redis: 7+
+- Node.js: 20.x LTS
+- Nginx: 1.18+
+
+---
+
+### Verification
+
+After installation, verify everything is working:
+
+```bash
+# Check services
+sudo systemctl status ml-server-backend
+sudo systemctl status postgresql
+sudo systemctl status redis-server
+sudo systemctl status nginx
+
+# Test backend API
+curl http://localhost:8001/api/v1/ml/health
+
+# Test database connection
+psql -h localhost -U ml_server -d ml_server -c "SELECT 1;"
+
+# Test Redis
+redis-cli ping
+
+# Fetch Spot Advisor data
+curl -s https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json | jq . | head -20
+```
+
+---
+
 ## 🚀 Deployment Configuration
 
 ### Environment Variables
