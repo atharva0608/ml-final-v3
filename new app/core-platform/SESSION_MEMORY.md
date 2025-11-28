@@ -10,6 +10,49 @@
 
 ---
 
+## 📝 Change Tracking & Cross-Component Coordination
+
+**IMPORTANT**: This component is part of a multi-component system. Changes here may affect other components.
+
+### Common Changes Log
+**Location**: `new app/common/CHANGES.md`
+
+**Purpose**: Track all changes that affect multiple components (ML Server, Core Platform, Frontend)
+
+**When to Check**:
+- ✅ **Before starting work**: Read CHANGES.md to understand recent cross-component updates
+- ✅ **After completing work**: Log any change that affects other components
+- ✅ **During API changes**: Always update CHANGES.md if you modify request/response schemas
+
+**When to Update CHANGES.md**:
+- API contract changes (endpoints, schemas)
+- AWS IAM permission changes
+- Kubernetes RBAC changes
+- Environment variable changes
+- Dependency version updates
+- Security changes
+- Breaking changes to any interface
+- Data collection changes that affect ML Server inputs
+
+**Developer Workflow**:
+```bash
+# Before starting
+cat "new app/common/CHANGES.md"                 # Check recent changes
+cat "new app/core-platform/SESSION_MEMORY.md"   # Check component-specific memory
+
+# After completing work
+vim "new app/core-platform/SESSION_MEMORY.md"   # Update component memory
+vim "new app/common/CHANGES.md"                 # Log cross-component changes
+git commit -m "Core Platform: Descriptive message"
+```
+
+**Cross-Component Dependencies**:
+- **Core Platform → ML Server**: Data collection format must match ML Server decision engine inputs
+- **Core Platform → Frontend**: API responses must match frontend TypeScript interfaces
+- **AWS/K8s Changes**: IAM/RBAC changes affect customer onboarding process
+
+---
+
 ## 🎯 Core Responsibilities
 
 ### 1. Central Database Management

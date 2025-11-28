@@ -10,6 +10,48 @@
 
 ---
 
+## 📝 Change Tracking & Cross-Component Coordination
+
+**IMPORTANT**: This component is part of a multi-component system. Changes here may affect other components.
+
+### Common Changes Log
+**Location**: `new app/common/CHANGES.md`
+
+**Purpose**: Track all changes that affect multiple components (ML Server, Core Platform, Frontend)
+
+**When to Check**:
+- ✅ **Before starting work**: Read CHANGES.md to understand recent cross-component updates
+- ✅ **After completing work**: Log any change that affects other components
+- ✅ **During API changes**: Always update CHANGES.md if you modify request/response schemas
+
+**When to Update CHANGES.md**:
+- API contract changes (endpoints, schemas)
+- Database schema changes
+- Environment variable changes
+- Dependency version updates
+- Security or IAM permission changes
+- Breaking changes to any interface
+- New decision engines or features that require Core Platform support
+
+**Developer Workflow**:
+```bash
+# Before starting
+cat "new app/common/CHANGES.md"           # Check recent changes
+cat "new app/ml-server/SESSION_MEMORY.md" # Check component-specific memory
+
+# After completing work
+vim "new app/ml-server/SESSION_MEMORY.md" # Update component memory
+vim "new app/common/CHANGES.md"           # Log cross-component changes
+git commit -m "ML Server: Descriptive message"
+```
+
+**Cross-Component Dependencies**:
+- **ML Server → Core Platform**: Decision engine outputs must match Core Platform executor inputs
+- **ML Server → Frontend**: API responses must match frontend TypeScript interfaces
+- **Database Schema**: Changes may require Core Platform data collection updates
+
+---
+
 ## 🎯 Core Responsibilities
 
 ### 1. ML Model Management & Inference
