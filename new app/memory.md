@@ -41,7 +41,7 @@ Build a **CAST AI competitor** that:
     │  CloudOptim Control Plane                │
     │                                           │
     │  ┌─────────────────────────────────────┐ │
-    │  │     Core Platform                   │ │
+    │  │     Core Platform (Port 8000)       │ │
     │  │  • Central Backend (FastAPI)        │ │
     │  │  • PostgreSQL Database              │ │
     │  │  • Admin Frontend (React)           │ │
@@ -51,11 +51,15 @@ Build a **CAST AI competitor** that:
     │  └──────────────┬──────────────────────┘ │
     │                 │ REST API                │
     │  ┌──────────────┴──────────────────────┐ │
-    │  │     ML Server                       │ │
+    │  │     ML Server (Port 8001+3001)      │ │
+    │  │  • ML Backend (FastAPI)             │ │
+    │  │  • PostgreSQL Database (pricing)    │ │
+    │  │  • ML Frontend (React)              │ │
     │  │  • Model Hosting (inference-only)  │ │
     │  │  • Decision Engines (pluggable)    │ │
     │  │  • Data Gap Filler                 │ │
-    │  │  • Spot Advisor Data Cache         │ │
+    │  │  • Pricing Data Fetcher            │ │
+    │  │  • Redis Cache (Spot Advisor)      │ │
     │  └─────────────────────────────────────┘ │
     │                                           │
     └───────────────────────────────────────────┘
@@ -247,35 +251,228 @@ rules:
 
 ---
 
+## 🔬 ML Server Infrastructure (Complete Stack)
+
+### ML Backend (FastAPI + PostgreSQL + Redis)
+
+**Purpose**: Complete ML data management and inference infrastructure
+
+**Components**:
+1. **FastAPI Backend** (Port 8001):
+   - Model upload & management API
+   - Data gap filling API
+   - Model refresh API (trigger data fetch & model reload)
+   - Pricing data API (Spot prices, On-Demand prices, Spot Advisor)
+   - Prediction & decision API
+   - Health & metrics API
+
+2. **PostgreSQL Database** (dedicated ML database):
+   - **ml_models**: Model metadata, versions, trained_until_date
+   - **decision_engines**: Engine metadata, versions, configs
+   - **spot_prices**: Historical Spot prices (indexed by instance_type, region, timestamp)
+   - **on_demand_prices**: On-Demand pricing data
+   - **spot_advisor_data**: AWS Spot Advisor interruption rates (public data)
+   - **data_gaps**: Gap analysis records, fill progress tracking
+   - **model_refresh_history**: Model refresh execution logs
+   - **predictions_log**: Prediction history for monitoring
+   - **decision_execution_log**: Decision execution history
+
+3. **Redis Cache**:
+   - AWS Spot Advisor data (refresh every 1 hour)
+   - Recent Spot prices (last 7 days for fast lookups)
+   - Active model metadata
+   - Recent predictions (5-minute TTL)
+
+### ML Frontend (React Dashboard - Port 3001)
+
+**Purpose**: Complete ML lifecycle management interface
+
+**Pages**:
+1. **Model Management**:
+   - Upload models (.pkl files)
+   - Activate/deactivate model versions
+   - View model details, performance metrics
+   - Model version history
+
+2. **Data Gap Filler**:
+   - Visual gap analyzer (timeline view)
+   - Gap fill configuration (instance types, regions, date ranges)
+   - Real-time progress tracking (progress bar, ETA, records filled)
+   - Gap-filling history
+
+3. **Pricing Data Viewer**:
+   - Spot price charts (interactive, filterable)
+   - On-Demand price comparison
+   - Spot Advisor heatmap (interruption rates by instance type × region)
+   - Export to CSV
+
+4. **Model Refresh Dashboard**:
+   - Trigger manual refresh ("Fetch data from [date] to [date]")
+   - Select instance types (with pattern matching: "m5.*", "c5.*")
+   - Select regions (multi-select)
+   - Real-time refresh progress
+   - Auto-refresh scheduler (daily/weekly at specific time)
+   - Refresh history
+
+5. **Live Predictions**:
+   - Real-time prediction charts
+   - Prediction vs Actual comparison
+   - Confidence score metrics
+   - Prediction stream (live updates via WebSocket)
+
+6. **Decision Engine Dashboard**:
+   - Upload decision engines (.py files)
+   - Engine configuration (JSON editor)
+   - Test engines with sample data
+   - Live decision stream
+   - Decision history
+
+### Key Workflows
+
+**Workflow 1: Model Upload → Gap Fill → Activate**:
+```
+1. User uploads model via ML Frontend
+   → Backend saves to /models/uploaded/, inserts into ml_models table
+
+2. User clicks "Analyze Gap"
+   → Backend compares trained_until_date vs current_date
+   → Returns: gap_days=28, estimated_records=150,000
+
+3. User configures gap fill:
+   - Instance types: m5.*, c5.*, r5.*
+   - Regions: us-east-1, us-west-2
+   - Click "Fill Gap"
+
+4. Backend starts gap-filling task:
+   → Fetches Spot prices from AWS DescribeSpotPriceHistory
+   → Inserts into spot_prices table in batches
+   → Frontend polls progress every 2 seconds
+
+5. Gap filled → User activates model
+   → Model now has up-to-date pricing data
+   → Ready for predictions
+```
+
+**Workflow 2: Model Refresh (Scheduled)**:
+```
+1. Cron scheduler (daily at 2 AM UTC):
+   → Triggers refresh for active models
+
+2. Backend refresh service:
+   → Fetches last 7 days of Spot prices
+   → Updates spot_prices table
+   → Updates spot_advisor_data from AWS Spot Advisor JSON
+
+3. Reloads model with fresh data
+   → Updates model metadata: last_refresh_date
+   → Records in model_refresh_history
+
+4. If auto_activate=true:
+   → Activates refreshed model automatically
+
+5. Frontend shows notification:
+   → "Model Refreshed - Data coverage: [dates]"
+```
+
+**Workflow 3: Live Prediction Request (from Core Platform)**:
+```
+1. Core Platform → ML Server: POST /api/v1/ml/decision/spot-optimize
+   → Body: ClusterState, requirements, constraints
+
+2. ML Backend queries database:
+   SELECT * FROM spot_prices
+   WHERE instance_type IN (...) AND region = '...'
+     AND timestamp > NOW() - INTERVAL '7 days'
+   ORDER BY timestamp DESC LIMIT 1000
+
+   SELECT * FROM spot_advisor_data
+   WHERE instance_type IN (...) AND region = '...'
+
+3. Loads active model, runs inference
+
+4. Passes to decision engine, generates recommendations
+
+5. Returns DecisionResponse to Core Platform
+
+6. Logs prediction & decision in database
+
+7. ML Frontend updates live dashboard (WebSocket)
+```
+
+### API Highlights
+
+**Model Management**:
+- `POST /api/v1/ml/models/upload` - Upload model
+- `GET /api/v1/ml/models/list` - List models
+- `POST /api/v1/ml/models/activate` - Activate version
+- `GET /api/v1/ml/models/{id}/details` - Model details
+
+**Data Gap Filling**:
+- `POST /api/v1/ml/gap-filler/analyze` - Analyze gaps
+- `POST /api/v1/ml/gap-filler/fill` - Fill gaps
+- `GET /api/v1/ml/gap-filler/status/{id}` - Fill progress
+- `GET /api/v1/ml/gap-filler/history` - Fill history
+
+**Model Refresh**:
+- `POST /api/v1/ml/refresh/trigger` - Trigger refresh
+- `GET /api/v1/ml/refresh/status/{id}` - Refresh progress
+- `GET /api/v1/ml/refresh/history` - Refresh history
+- `POST /api/v1/ml/refresh/schedule` - Schedule auto-refresh
+
+**Pricing Data**:
+- `GET /api/v1/ml/pricing/spot` - Spot price history
+- `GET /api/v1/ml/pricing/on-demand` - On-Demand prices
+- `GET /api/v1/ml/pricing/spot-advisor` - Spot Advisor data
+- `POST /api/v1/ml/pricing/fetch` - Manual data fetch
+- `GET /api/v1/ml/pricing/stats` - Data coverage stats
+
+---
+
 ## 📁 Repository Structure
 
 ```
 new app/
 ├── memory.md                   # This file
-├── ml-server/                  # ML inference & decision engine server
-│   ├── SESSION_MEMORY.md      # ML server documentation
-│   ├── models/                 # Model hosting (uploaded models)
-│   ├── decision_engine/        # Pluggable decision engines
-│   ├── data/                   # Gap filler & data fetchers
-│   ├── api/                    # FastAPI server
-│   └── ...
+├── ml-server/                  # ML Server (Backend + Database + Frontend)
+│   ├── SESSION_MEMORY.md      # ML server comprehensive documentation
+│   ├── backend/                # FastAPI backend
+│   │   ├── main.py            # FastAPI entry point
+│   │   ├── api/routes/        # API endpoints (models, engines, gap-filler, refresh, pricing)
+│   │   ├── database/          # SQLAlchemy models, Pydantic schemas, migrations
+│   │   ├── services/          # Business logic (model, engine, pricing, gap-filler, refresh services)
+│   │   └── utils/             # Validators, helpers
+│   ├── ml-frontend/            # React ML Dashboard (Port 3001)
+│   │   ├── src/components/    # Model management, gap filler, pricing viewer, refresh dashboard
+│   │   ├── src/services/      # API client
+│   │   └── src/types/         # TypeScript types
+│   ├── models/
+│   │   ├── spot_predictor.py  # ML models
+│   │   └── uploaded/          # Uploaded model files (.pkl)
+│   ├── decision_engine/
+│   │   ├── spot_optimizer.py  # Decision engines
+│   │   └── uploaded/          # Uploaded engine files (.py)
+│   ├── config/                 # ML config, database config
+│   ├── scripts/                # install.sh, setup_database.sh, start_backend.sh, start_frontend.sh
+│   └── tests/                  # API tests, service tests
 ├── core-platform/              # Central backend, DB, admin UI
 │   ├── SESSION_MEMORY.md      # Core platform documentation
 │   ├── api/                    # Main REST API
 │   ├── database/               # PostgreSQL schema & migrations
-│   ├── admin-frontend/         # React admin dashboard
+│   ├── admin-frontend/         # React admin dashboard (Port 3000)
 │   ├── services/               # Business logic
 │   │   ├── eventbridge_poller.py   # SQS poller for Spot warnings
 │   │   ├── k8s_remote_client.py    # Remote K8s API client
-│   │   └── spot_handler.py         # Spot interruption handler
+│   │   ├── spot_handler.py         # Spot interruption handler
+│   │   ├── ghost_probe_scanner.py  # Zombie instance scanner
+│   │   └── volume_cleanup.py       # Zombie volume cleanup
 │   └── ...
 ├── common/                     # Shared components
 │   ├── INTEGRATION_GUIDE.md   # Integration documentation
-│   ├── schemas/                # Pydantic models
+│   ├── schemas/                # Pydantic models (shared between servers)
 │   ├── auth/                   # Authentication
 │   └── config/                 # Common configuration
 └── infra/                      # Infrastructure as Code
-    ├── docker-compose.yml      # Local development
+    ├── docker-compose.yml      # Local development (all services)
     ├── kubernetes/             # K8s manifests
     └── terraform/              # Cloud infrastructure
 ```
