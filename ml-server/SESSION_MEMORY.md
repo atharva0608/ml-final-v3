@@ -446,3 +446,205 @@ Response:
 *Append all future changes and updates below this line*
 
 ---
+
+## 🔄 Session Updates Log (Continued)
+
+### 2025-11-28 - Architecture Update: Inference-Only ML Server
+
+**CRITICAL ARCHITECTURE CHANGE**: ML Server is now **inference and experimentation only**
+
+#### Key Changes:
+
+**1. No Training on ML Server** ❌
+- This server **does NOT train or retrain models**
+- All training happens offline / elsewhere:
+  - Separate training pipelines
+  - Jupyter notebooks
+  - Dedicated training infrastructure
+- Once trained, models are **exported and uploaded** to this server
+
+**2. Model Upload via Frontend** ✅
+- Models and decision engines are **uploaded through ML frontend**
+- Use **existing frontend design and layout** (same look & feel as current app)
+- Only backend endpoints and wiring change
+- Features:
+  - Model upload UI (`.pkl` files, serialized models)
+  - Decision engine upload/selection
+  - Model versioning (A/B testing different versions)
+  - Experimentation with new decision engines
+
+**3. Automatic Gap-Filling (October → Today Problem)** 🔧
+
+**The Problem**:
+```
+Model trained on data up to October
+Instance needs predictions using October → current date
+Previously required manual data engineering
+```
+
+**The Solution** (On ML Server):
+1. ML server knows model's `trained_until` date (stored in model metadata)
+2. On startup or via ML frontend trigger:
+   - Detects gap between `trained_until` and "today"
+   - **Directly pulls historic market data on the same server**:
+     - Spot/On-Demand prices for all instance types
+     - Prices for all regions
+     - Required metrics
+   - Fills gap with historic prices + feature engineering
+3. Once complete:
+   - Model immediately produces **up-to-date predictions**
+   - No waiting for weeks of new data collection
+
+**Result**: As soon as instance starts/refreshes, get "today-ready" predictions using uploaded model + auto gap-filling
+
+**4. Live Predictions & Decision Streaming** 📊
+
+**Live Predictions**:
+- After gap filled, ML server:
+  - Continuously runs inference with:
+    - Fresh incoming data
+    - Up-to-date historic context (already filled)
+  - Stores predictions in local store (DB/cache)
+  - Optimized for time series plots and quick lookups
+
+**Live Decisions**:
+- Decision engine is **pluggable** and uploaded like models
+- Fixed input format (normalized metrics, prices, states)
+- Fixed output format (actions, scores, explanations)
+- ML server:
+  - Feeds predictions → decision engine
+  - Produces **live, actionable decisions**
+  - Examples: "move to Spot in region X", "consolidate nodes", "rightsizing"
+  - Exposes via APIs consumed by central backend & dashboards
+
+**5. Frontend Features** (Using Current Design):
+- **Keep current frontend design** (layout, styling, UX)
+- New functionality:
+  - ✅ Model upload UI
+  - ✅ Decision engine upload/selection (dropdown for version)
+  - ✅ Gap-fill trigger & status display ("Fill missing data from 2025-10-01 to today")
+  - ✅ Live charts:
+    - Predictions vs actuals (per instance/region)
+    - Live decision stream visualized as timelines/markers/event overlays
+  - All graphs update in near real-time with same visual style
+
+#### Repository Layout Update
+
+**Folder Structure Change**:
+```
+/old app/          # Legacy codebase (all existing files)
+  ├─ <existing frontend>
+  ├─ <existing backend>
+  ├─ <Dockerfiles, configs, scripts>
+  └─ memory.md (old references)
+
+/new app/          # New architecture
+  ├─ ml-server/           # Dedicated ML + decision server
+  ├─ core-platform/       # Central backend, DB, admin frontend
+  ├─ client-agent/        # Lightweight client-side agent
+  ├─ memory.md            # Updated architecture (this approach)
+  └─ infra/               # docker-compose, IaC, scripts
+```
+
+#### Updated ML Server Responsibilities
+
+**What ML Server DOES**:
+- ✅ Host serialized ML models (uploaded, not trained here)
+- ✅ Host pluggable decision engine modules
+- ✅ Serve model upload endpoints via frontend
+- ✅ Automatic gap-filling using historic prices (same server)
+- ✅ Run inference continuously
+- ✅ Stream live predictions
+- ✅ Execute decision engines
+- ✅ Expose APIs for predictions & decisions
+
+**What ML Server DOES NOT DO**:
+- ❌ Train or retrain models
+- ❌ Heavy data engineering
+- ❌ Long-term metric storage (that's central platform)
+
+#### New API Endpoints
+
+```http
+# Model Management
+POST /api/v1/ml/models/upload
+  → Upload trained model file
+  → Body: multipart/form-data with .pkl file
+  → Metadata: model_name, version, trained_until_date
+
+GET /api/v1/ml/models/list
+  → List all uploaded models
+  → Returns: [{model_id, name, version, trained_until, uploaded_at}]
+
+POST /api/v1/ml/models/activate
+  → Set active model version
+  → Body: {model_id, version}
+
+# Decision Engine Management
+POST /api/v1/ml/engines/upload
+  → Upload decision engine module
+  → Body: Python module file
+
+GET /api/v1/ml/engines/list
+  → List available decision engines
+
+POST /api/v1/ml/engines/select
+  → Select active decision engine
+  → Body: {engine_id, config}
+
+# Gap Filling
+POST /api/v1/ml/gap-filler/analyze
+  → Analyze data gaps for active model
+  → Returns: {trained_until, current_date, gap_days, required_data_types}
+
+POST /api/v1/ml/gap-filler/fill
+  → Trigger automatic gap filling
+  → Pulls historic prices from AWS
+  → Returns: {status, records_filled, duration}
+
+GET /api/v1/ml/gap-filler/status
+  → Check gap-filling progress
+  → Returns: {in_progress, percent_complete, eta}
+```
+
+#### Updated Environment Variables
+
+```bash
+# Model Configuration
+MODEL_UPLOAD_DIR=/app/models/uploaded
+MODEL_ACTIVE_VERSION=v1
+ALLOW_MODEL_TRAINING=false  # Explicitly disabled
+
+# Gap Filling Configuration
+GAP_FILLER_ENABLED=true
+GAP_FILLER_AWS_REGION=us-east-1
+GAP_FILLER_INSTANCE_TYPES=m5.large,m5.xlarge,c5.large
+GAP_FILLER_REGIONS=us-east-1,us-west-2,eu-west-1
+GAP_FILLER_HISTORIC_DAYS_MAX=90
+
+# Decision Engine Configuration
+DECISION_ENGINE_DIR=/app/engines
+DECISION_ENGINE_ACTIVE=spot_optimizer_v1
+```
+
+#### Migration Plan
+
+**Phase 1** (Current):
+- ✅ Documentation updated
+- ⏳ Waiting for user approval to implement
+
+**Phase 2** (Implementation):
+1. Move existing code to `/old app/`
+2. Create `/new app/` structure
+3. Implement model upload endpoints
+4. Implement gap-filler with AWS price fetching
+5. Create ML frontend (reuse current design)
+6. Add decision engine upload capability
+
+**Phase 3** (Testing):
+1. Test model upload flow
+2. Test gap-filling with real AWS data
+3. Verify predictions after gap fill
+4. Test decision engine swapping
+
+---
