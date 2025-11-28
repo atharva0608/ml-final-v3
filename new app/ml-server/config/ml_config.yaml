@@ -1,0 +1,62 @@
+# ML Server Configuration
+# Agentless Kubernetes Cost Optimization
+
+ml_server:
+  host: "0.0.0.0"
+  port: 8001
+  workers: 4
+  log_level: "INFO"
+
+database:
+  host: "localhost"
+  port: 5432
+  name: "ml_server"
+  user: "ml_server"
+  password: "ml_server_password"
+  pool_size: 10
+  max_overflow: 20
+
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+  cache_ttl_seconds: 3600  # 1 hour for Spot Advisor data
+  pool_size: 10
+
+aws:
+  region: "us-east-1"
+  spot_advisor_url: "https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json"
+
+models:
+  upload_dir: "/opt/ml-server/models/uploaded"
+  max_file_size_mb: 500
+  allow_training: false  # Inference-only
+  auto_reload: true
+
+decision_engines:
+  upload_dir: "/opt/ml-server/decision_engine/uploaded"
+  active_engines:
+    spot_optimizer: "spot_optimizer_v1"
+    bin_packing: "bin_packing_v1"
+    rightsizing: "rightsizing_v1"
+    scheduler: "scheduler_v1"
+    ghost_probe: "ghost_probe_v1"
+    volume_cleanup: "volume_cleanup_v1"
+    network_optimizer: "network_optimizer_v1"
+    oomkilled_remediation: "oomkilled_v1"
+
+gap_filler:
+  enabled: true
+  default_lookback_days: 15
+  max_lookback_days: 90
+  batch_size: 1000
+
+model_refresh:
+  auto_refresh_enabled: false
+  schedule: "0 2 * * *"  # Daily at 2 AM UTC
+  lookback_days: 7
+
+pricing_data:
+  fetch_parallelism: 5
+  retry_attempts: 3
+  retry_backoff_seconds: 2

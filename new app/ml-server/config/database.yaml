@@ -1,0 +1,22 @@
+# Database Configuration for ML Server
+
+development:
+  host: "localhost"
+  port: 5432
+  database: "ml_server"
+  user: "ml_server"
+  password: "ml_server_password"
+
+production:
+  host: "${DB_HOST}"
+  port: "${DB_PORT}"
+  database: "${DB_NAME}"
+  user: "${DB_USER}"
+  password: "${DB_PASSWORD}"
+
+connection_pool:
+  min_size: 10
+  max_size: 20
+  timeout_seconds: 30
+  max_queries: 50000
+  max_inactive_connection_lifetime: 300
