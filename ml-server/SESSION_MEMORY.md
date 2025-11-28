@@ -1,0 +1,448 @@
+# ML Server - Session Memory & Documentation
+
+## 📋 Overview
+**Component**: ML Server (Machine Learning & Decision Engine)
+**Purpose**: Handles ML model loading, predictions, and intelligent decision-making for Kubernetes cost optimization
+**Instance Type**: Standalone server (can run on separate instance)
+**Created**: 2025-11-28
+**Last Updated**: 2025-11-28
+
+---
+
+## 🎯 Core Responsibilities
+
+### 1. ML Model Management
+- Load and serve trained ML models for:
+  - Spot instance interruption prediction
+  - Resource utilization forecasting
+  - Cost optimization recommendations
+- Support model versioning and hot-reloading
+- Handle model training data gap filling
+
+### 2. Decision Engine (Pluggable Architecture)
+- **Spot Optimizer Engine**: Selects optimal Spot instances based on:
+  - Public AWS Spot Advisor data
+  - Real-time spot price history
+  - Historical interruption patterns
+  - Time-of-day risk analysis
+- **Bin Packing Engine**: Consolidates workloads to minimize node count
+- **Rightsizing Engine**: Matches instance sizes to actual workload requirements
+- **Office Hours Scheduler**: Auto-scales dev/staging environments
+
+### 3. Data Processing
+- **Gap Filler**: Handles scenario where model trained on old data needs recent data
+  - Queries AWS APIs for missing data
+  - Fills gaps from last training date to current deployment
+  - Supports 15-day lookback requirement
+
+---
+
+## 🔌 Integration Points (Common Components)
+
+### A. Communication with Central Server
+**Protocol**: REST API + WebSocket (for real-time updates)
+**Endpoints**:
+- `POST /api/v1/ml/predict` - Receive prediction requests from Central Server
+- `POST /api/v1/ml/decision` - Receive decision engine requests
+- `GET /api/v1/ml/health` - Health check endpoint
+- `WS /api/v1/ml/stream` - Real-time predictions stream
+
+**Data Flow**:
+```
+Central Server → ML Server: Request for decision/prediction
+ML Server → Central Server: Decision output with recommendations
+```
+
+### B. Data Exchange Format (COMMON SCHEMA)
+```json
+{
+  "request_id": "uuid",
+  "timestamp": "ISO-8601",
+  "cluster_id": "customer-cluster-id",
+  "request_type": "spot_selection|bin_packing|rightsizing",
+  "input_data": {
+    "current_state": {},
+    "requirements": {},
+    "constraints": {}
+  }
+}
+```
+
+**Response Format**:
+```json
+{
+  "request_id": "uuid",
+  "timestamp": "ISO-8601",
+  "decision_type": "spot_instance_selection",
+  "recommendations": [],
+  "confidence_score": 0.85,
+  "estimated_savings": 1250.50,
+  "risk_assessment": {},
+  "execution_plan": []
+}
+```
+
+### C. Shared Configuration
+**Location**: `/config/common.yaml`
+**Contains**:
+- Central Server connection details
+- Database credentials (read-only access)
+- AWS IAM role ARN
+- Redis cache connection
+- Logging configuration
+
+### D. Database Access
+**Type**: Read-only access to Central Server database
+**Purpose**:
+- Fetch historical cluster metrics
+- Retrieve customer configuration
+- Access training data for model updates
+
+**Tables Used**:
+- `clusters` - Cluster metadata
+- `spot_history` - Historical spot interruptions
+- `metrics_timeseries` - Cluster performance metrics
+- `customer_config` - Customer-specific settings
+
+---
+
+## 📁 Directory Structure
+
+```
+ml-server/
+├── SESSION_MEMORY.md          # This file - session context & updates
+├── README.md                   # Setup and deployment instructions
+├── requirements.txt            # Python dependencies
+├── config/
+│   ├── common.yaml            # Shared config with other servers
+│   ├── ml_config.yaml         # ML-specific configuration
+│   └── models_registry.json   # Model versioning and paths
+├── models/
+│   ├── spot_predictor.py      # Spot interruption predictor
+│   ├── resource_forecaster.py # Resource usage forecasting
+│   └── saved/                  # Trained model files
+│       ├── spot_predictor_v1.model
+│       └── spot_predictor_v1_encoders.pkl
+├── decision_engine/
+│   ├── base_engine.py         # Base class for all engines
+│   ├── spot_optimizer.py      # Spot instance selection engine
+│   ├── bin_packing.py         # Workload consolidation engine
+│   ├── rightsizing.py         # Instance rightsizing engine
+│   └── scheduler.py            # Office hours scheduler
+├── data/
+│   ├── gap_filler.py          # Fills training data gaps
+│   ├── aws_fetcher.py         # Fetches data from AWS APIs
+│   └── preprocessor.py        # Data preprocessing utilities
+├── api/
+│   ├── server.py              # FastAPI server
+│   ├── routes/
+│   │   ├── predictions.py     # Prediction endpoints
+│   │   ├── decisions.py       # Decision engine endpoints
+│   │   └── health.py          # Health check endpoints
+│   └── middleware/
+│       ├── auth.py            # Authentication middleware
+│       └── logging.py         # Request logging
+├── scripts/
+│   ├── install.sh             # Installation script
+│   ├── start_server.sh        # Server startup script
+│   ├── train_models.sh        # Model training script
+│   └── fill_data_gaps.sh      # Data gap filling script
+├── tests/
+│   ├── test_models.py
+│   ├── test_decision_engines.py
+│   └── test_api.py
+└── docs/
+    ├── API_SPEC.md            # API documentation
+    └── DECISION_ENGINES.md    # Decision engine algorithms
+```
+
+---
+
+## 🔧 Technology Stack
+
+### Core Framework
+- **Language**: Python 3.10+
+- **API Framework**: FastAPI 0.103+
+- **ASGI Server**: Uvicorn
+
+### ML Libraries
+- **XGBoost**: 1.7.6 - Spot interruption prediction
+- **scikit-learn**: 1.3.0 - Data preprocessing, evaluation
+- **TensorFlow**: 2.13.0 - Deep learning models (future)
+- **pandas**: 2.0.3 - Data manipulation
+- **numpy**: 1.24.3 - Numerical operations
+
+### AWS Integration
+- **boto3**: 1.28+ - AWS SDK for Python
+- **botocore**: 1.31+ - AWS core library
+
+### Caching & Storage
+- **Redis**: 5.0+ - Cache for Spot Advisor data, pricing
+- **PostgreSQL**: Read-only client for Central DB
+
+### Monitoring
+- **prometheus-client**: Metrics export
+- **python-json-logger**: Structured logging
+
+---
+
+## 🚀 Deployment Configuration
+
+### Environment Variables
+```bash
+# Server Configuration
+ML_SERVER_HOST=0.0.0.0
+ML_SERVER_PORT=8001
+ML_SERVER_WORKERS=4
+
+# Central Server Connection
+CENTRAL_SERVER_URL=http://central-server:8000
+CENTRAL_SERVER_API_KEY=xxx
+
+# Database (Read-Only)
+DB_HOST=central-db.internal
+DB_PORT=5432
+DB_NAME=cloudoptim
+DB_USER=ml_server_ro
+DB_PASSWORD=xxx
+
+# Redis Cache
+REDIS_HOST=redis.internal
+REDIS_PORT=6379
+REDIS_DB=0
+
+# AWS Configuration
+AWS_REGION=us-east-1
+AWS_ROLE_ARN=arn:aws:iam::xxx:role/MLServerRole
+
+# Model Configuration
+MODEL_DIR=/app/models/saved
+MODEL_VERSION=v1
+AUTO_RELOAD_MODELS=true
+```
+
+### Docker Configuration
+```yaml
+# docker-compose.yml
+services:
+  ml-server:
+    build: ./ml-server
+    ports:
+      - "8001:8001"
+    environment:
+      - ML_SERVER_PORT=8001
+    volumes:
+      - ./ml-server/models/saved:/app/models/saved
+      - ./ml-server/config:/app/config
+    depends_on:
+      - redis
+    networks:
+      - cloudoptim-network
+```
+
+---
+
+## 📊 Key Algorithms & Decision Logic
+
+### 1. Spot Risk Score Calculation
+**Formula**:
+```
+Risk Score = (0.60 × Public_Rate_Score) +
+             (0.25 × Volatility_Score) +
+             (0.10 × Gap_Score) +
+             (0.05 × Time_Score)
+```
+
+**Thresholds**:
+- Score > 0.65: Safe to use
+- Score 0.40-0.65: Use with caution
+- Score < 0.40: Avoid
+
+### 2. Diversity Strategy
+**Rule**: Never allocate >40% of nodes to single instance family
+**Implementation**: `_apply_diversity_strategy()` in spot_optimizer.py
+
+### 3. Data Gap Filling Logic
+**Problem**: Model trained on data up to 30 days ago, need 15 days recent data
+**Solution**:
+1. Identify gap: `last_training_date` to `current_date`
+2. Query AWS APIs for missing spot prices
+3. Simulate/estimate missing interruption events
+4. Merge with existing training data
+5. Update model with fresh data
+
+---
+
+## 🔄 Session Updates Log
+
+### 2025-11-28 - Initial Setup
+**Changes Made**:
+- Created ml-server folder structure
+- Implemented base decision engine architecture
+- Created SpotOptimizerEngine with risk scoring
+- Implemented SpotInterruptionPredictor ML model
+- Created DataGapFiller for handling training data gaps
+- Defined common integration points with Central Server
+- Documented data exchange formats
+
+**Files Created**:
+- `decision_engine/base_engine.py`
+- `decision_engine/spot_optimizer.py`
+- `models/spot_predictor.py`
+- `data/gap_filler.py`
+- `requirements.txt`
+
+**Next Steps**:
+1. Implement remaining decision engines (bin packing, rightsizing)
+2. Create FastAPI server with prediction endpoints
+3. Add Redis caching for Spot Advisor data
+4. Create training pipeline script
+5. Add comprehensive tests
+
+---
+
+## 🔗 Common Components Shared Across Servers
+
+### 1. Authentication System
+**Location**: Shared library (to be created)
+**Used By**: All three servers
+**Purpose**: Validate API keys, JWT tokens
+
+### 2. Data Models (Pydantic Schemas)
+**Location**: `/common/models.py` (to be created)
+**Shared Schemas**:
+- `ClusterState`
+- `DecisionRequest`
+- `DecisionResponse`
+- `CustomerConfig`
+- `MetricsData`
+
+### 3. Database Schema
+**Owner**: Central Server
+**Accessed By**: All servers (ML: read-only, Client: read/write via API)
+**Key Tables**:
+- `customers` - Customer accounts
+- `clusters` - Kubernetes clusters
+- `nodes` - Cluster nodes
+- `spot_events` - Spot interruption events
+- `optimization_history` - Decision history
+
+### 4. Message Queue (Future)
+**Type**: RabbitMQ or Redis Pub/Sub
+**Purpose**: Real-time event streaming between servers
+**Events**:
+- `spot_interruption_detected`
+- `optimization_recommended`
+- `cluster_state_changed`
+
+### 5. Configuration Management
+**Format**: YAML files
+**Structure**:
+```yaml
+# common.yaml (shared by all servers)
+environment: production
+log_level: INFO
+database:
+  host: central-db.internal
+  port: 5432
+redis:
+  host: redis.internal
+  port: 6379
+```
+
+---
+
+## 📝 API Specifications
+
+### Prediction Endpoint
+```http
+POST /api/v1/ml/predict/spot-interruption
+Content-Type: application/json
+
+{
+  "instance_type": "m5.large",
+  "region": "us-east-1",
+  "availability_zone": "us-east-1a",
+  "spot_price": 0.045,
+  "launch_time": "2025-11-28T10:00:00Z"
+}
+
+Response:
+{
+  "interruption_probability": 0.08,
+  "confidence": 0.92,
+  "recommendation": "SAFE_TO_USE"
+}
+```
+
+### Decision Engine Endpoint
+```http
+POST /api/v1/ml/decision/spot-optimize
+Content-Type: application/json
+
+{
+  "cluster_id": "cluster-123",
+  "requirements": {
+    "cpu_required": 2.0,
+    "memory_required": 8.0,
+    "node_count": 10,
+    "region": "us-east-1"
+  }
+}
+
+Response:
+{
+  "decision_type": "spot_instance_selection",
+  "recommendations": [...],
+  "estimated_savings": 1250.50,
+  "execution_plan": [...]
+}
+```
+
+---
+
+## 🐛 Troubleshooting
+
+### Model Loading Fails
+**Symptom**: "Model file not found" error
+**Solution**: Check MODEL_DIR path, ensure models are mounted correctly
+
+### Low Prediction Accuracy
+**Symptom**: Confidence scores < 0.70
+**Solution**: Run data gap filler, retrain model with recent data
+
+### High Response Latency
+**Symptom**: API response time > 2 seconds
+**Solution**: Enable Redis caching, increase workers, check DB connection
+
+---
+
+## 📌 Important Notes
+
+1. **Pluggable Architecture**: All decision engines inherit from `BaseDecisionEngine`
+2. **Fixed Input/Output**: Standard `DecisionInput` and `DecisionOutput` contracts
+3. **Agentless**: This server doesn't deploy to customer clusters
+4. **Read-Only DB**: ML server has read-only access to Central DB
+5. **Model Versioning**: Support multiple model versions, hot-reload capability
+
+---
+
+## 🎯 Integration Checklist
+
+- [ ] Central Server API endpoint configured
+- [ ] Database read-only credentials set
+- [ ] Redis cache connection tested
+- [ ] AWS IAM role configured
+- [ ] Common data schemas aligned
+- [ ] Authentication middleware implemented
+- [ ] Health check endpoint responding
+- [ ] Logging forwarding to Central Server
+- [ ] Model files deployed and loaded
+- [ ] Data gap filler tested
+
+---
+
+**END OF SESSION MEMORY - ML SERVER**
+*Append all future changes and updates below this line*
+
+---
