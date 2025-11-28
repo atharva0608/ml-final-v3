@@ -10,6 +10,48 @@
 
 ---
 
+## 📝 Change Tracking & Cross-Component Coordination
+
+**IMPORTANT**: This component is part of a multi-component system. Changes here may affect other components.
+
+### Common Changes Log
+**Location**: `new app/common/CHANGES.md`
+
+**Purpose**: Track all changes that affect multiple components (ML Server, Core Platform, Frontend)
+
+**When to Check**:
+- ✅ **Before starting work**: Read CHANGES.md to understand recent cross-component updates
+- ✅ **After completing work**: Log any change that affects other components
+- ✅ **During API changes**: Always update CHANGES.md if you modify request/response schemas
+
+**When to Update CHANGES.md**:
+- API contract changes (endpoints, schemas)
+- Database schema changes
+- Environment variable changes
+- Dependency version updates
+- Security or IAM permission changes
+- Breaking changes to any interface
+- New decision engines or features that require Core Platform support
+
+**Developer Workflow**:
+```bash
+# Before starting
+cat "new app/common/CHANGES.md"           # Check recent changes
+cat "new app/ml-server/SESSION_MEMORY.md" # Check component-specific memory
+
+# After completing work
+vim "new app/ml-server/SESSION_MEMORY.md" # Update component memory
+vim "new app/common/CHANGES.md"           # Log cross-component changes
+git commit -m "ML Server: Descriptive message"
+```
+
+**Cross-Component Dependencies**:
+- **ML Server → Core Platform**: Decision engine outputs must match Core Platform executor inputs
+- **ML Server → Frontend**: API responses must match frontend TypeScript interfaces
+- **Database Schema**: Changes may require Core Platform data collection updates
+
+---
+
 ## 🎯 Core Responsibilities
 
 ### 1. ML Model Management & Inference
@@ -19,10 +61,14 @@
 - Support for Spot interruption prediction, resource forecasting
 
 ### 2. Decision Engine (Pluggable Architecture)
-- **Spot Optimizer Engine**: Select optimal Spot instances using AWS Spot Advisor data
-- **Bin Packing Engine**: Consolidate workloads to minimize node count
-- **Rightsizing Engine**: Match instance sizes to actual workload requirements
+- **Spot Optimizer Engine**: Select optimal Spot instances using AWS Spot Advisor data (NOT SPS scores)
+- **Bin Packing Engine**: Consolidate workloads to minimize node count (Tetris algorithm)
+- **Rightsizing Engine**: Match instance sizes to actual workload requirements (deterministic lookup)
 - **Office Hours Scheduler**: Auto-scale dev/staging environments
+- **Ghost Probe Scanner**: Detect zombie EC2 instances not in K8s clusters
+- **Zombie Volume Cleanup**: Identify and remove unattached EBS volumes
+- **Network Optimizer**: Cross-AZ traffic affinity optimization
+- **OOMKilled Remediation**: Detect and auto-fix OOMKilled pods
 - All engines pluggable with fixed input/output contracts
 
 ### 3. Pricing Data Management (Backend + Database)
@@ -299,10 +345,14 @@ ml-server/
 ├── decision_engine/
 │   ├── __init__.py
 │   ├── base_engine.py         # Base class for all engines
-│   ├── spot_optimizer.py      # Spot instance selection engine
-│   ├── bin_packing.py         # Workload consolidation engine
-│   ├── rightsizing.py         # Instance rightsizing engine
+│   ├── spot_optimizer.py      # Spot instance selection (AWS Spot Advisor, NO SPS)
+│   ├── bin_packing.py         # Workload consolidation (Tetris algorithm)
+│   ├── rightsizing.py         # Instance rightsizing (deterministic lookup)
 │   ├── scheduler.py           # Office hours scheduler
+│   ├── ghost_probe.py         # Zombie EC2 instance scanner
+│   ├── volume_cleanup.py      # Zombie volume cleanup
+│   ├── network_optimizer.py   # Cross-AZ traffic optimization
+│   ├── oomkilled_remediation.py  # OOMKilled pod auto-fix
 │   └── uploaded/              # Uploaded engine files (.py)
 ├── ml-frontend/               # React frontend
 │   ├── package.json
@@ -423,7 +473,7 @@ POST /api/v1/ml/engines/upload
     - file: .py file
     - engine_name: string
     - engine_version: string
-    - engine_type: string (spot_optimizer, bin_packing, rightsizing)
+    - engine_type: string (spot_optimizer, bin_packing, rightsizing, scheduler, ghost_probe, volume_cleanup, network_optimizer, oomkilled_remediation)
     - config: JSON (optional)
   → Returns: {engine_id, status}
 
@@ -813,6 +863,539 @@ GET /api/v1/ml/metrics
 
 ---
 
+## 📦 Installation & Setup
+
+### System Requirements
+
+**Operating System**:
+- Ubuntu 22.04 LTS or 24.04 LTS (recommended)
+- Amazon Linux 2023
+- Other Linux distributions (with adjustments)
+
+**Hardware Minimum**:
+- CPU: 4 cores (8 cores recommended for production)
+- RAM: 8GB (16GB recommended for production)
+- Disk: 50GB SSD (100GB+ for production with pricing data)
+
+**Software Prerequisites**:
+- Python 3.10+ (3.11 recommended)
+- PostgreSQL 15+
+- Redis 7+
+- Node.js 20.x LTS (for frontend)
+- Docker (optional, for containerized deployment)
+- AWS CLI v2 (for Spot Advisor data fetching)
+
+---
+
+### Installation Script
+
+**Automated Setup** (Ubuntu 22.04/24.04):
+
+```bash
+#!/bin/bash
+# ML Server Installation Script
+# Based on old app/old-version/central-server/scripts/setup.sh
+
+set -e
+
+# Colors
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+log() { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')]${NC} $1"; }
+info() { echo -e "${BLUE}[INFO]${NC} $1"; }
+
+log "Starting ML Server Installation..."
+
+# Update system
+log "Step 1: Updating system packages..."
+sudo apt-get update -y
+sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+
+# Install system dependencies
+log "Step 2: Installing system dependencies..."
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    python3.11 \
+    python3.11-venv \
+    python3-pip \
+    postgresql-15 \
+    postgresql-contrib \
+    redis-server \
+    nginx \
+    curl \
+    wget \
+    git \
+    build-essential \
+    libpq-dev \
+    unzip
+
+log "System dependencies installed"
+
+# Install Node.js 20.x LTS (for frontend)
+log "Step 3: Installing Node.js 20.x LTS..."
+if ! command -v node &> /dev/null; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs
+fi
+log "Node.js $(node --version) installed"
+
+# Install AWS CLI v2
+log "Step 4: Installing AWS CLI v2..."
+if ! command -v aws &> /dev/null; then
+    cd /tmp
+    curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    unzip -q awscliv2.zip
+    sudo ./aws/install > /dev/null 2>&1
+    rm -rf aws awscliv2.zip
+fi
+log "AWS CLI $(aws --version 2>&1 | cut -d' ' -f1) installed"
+
+# Create directory structure
+log "Step 5: Creating directory structure..."
+APP_DIR="/opt/ml-server"
+sudo mkdir -p $APP_DIR
+sudo chown $USER:$USER $APP_DIR
+
+mkdir -p $APP_DIR/backend
+mkdir -p $APP_DIR/models/uploaded
+mkdir -p $APP_DIR/decision_engine/uploaded
+mkdir -p $APP_DIR/ml-frontend
+mkdir -p $APP_DIR/scripts
+mkdir -p /var/log/ml-server
+
+log "Directory structure created"
+
+# Setup Python virtual environment
+log "Step 6: Setting up Python virtual environment..."
+cd $APP_DIR/backend
+python3.11 -m venv venv
+source venv/bin/activate
+
+# Install Python dependencies
+log "Step 7: Installing Python dependencies..."
+cat > requirements.txt << 'EOF'
+# Core ML Libraries (from old app/ml-component/requirements.txt)
+numpy==1.24.3
+pandas==2.0.3
+scikit-learn==1.3.0
+xgboost==1.7.6
+lightgbm==4.0.0
+
+# API Framework
+fastapi==0.103.0
+uvicorn[standard]==0.23.2
+pydantic==2.3.0
+pydantic-settings==2.0.3
+
+# Database
+asyncpg==0.29.0
+sqlalchemy==2.0.21
+alembic==1.12.0
+
+# Redis
+redis==5.0.0
+hiredis==2.2.3
+
+# AWS Integration
+boto3==1.28.25
+botocore==1.31.25
+
+# Monitoring
+prometheus-client==0.17.1
+python-json-logger==2.0.7
+
+# HTTP Client
+httpx==0.24.1
+requests==2.31.0
+
+# Environment
+python-dotenv==1.0.0
+
+# Testing
+pytest==7.4.0
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+EOF
+
+pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+
+log "Python dependencies installed"
+deactivate
+
+# Setup PostgreSQL database
+log "Step 8: Configuring PostgreSQL..."
+sudo systemctl start postgresql
+sudo systemctl enable postgresql
+
+# Create database and user
+sudo -u postgres psql << PSQL_EOF
+CREATE DATABASE ml_server;
+CREATE USER ml_server WITH ENCRYPTED PASSWORD 'ml_server_password';
+GRANT ALL PRIVILEGES ON DATABASE ml_server TO ml_server;
+\c ml_server
+GRANT ALL ON SCHEMA public TO ml_server;
+PSQL_EOF
+
+log "PostgreSQL database created"
+
+# Setup Redis
+log "Step 9: Configuring Redis..."
+sudo systemctl start redis-server
+sudo systemctl enable redis-server
+
+# Update Redis configuration for production
+sudo tee -a /etc/redis/redis.conf > /dev/null << 'REDIS_EOF'
+maxmemory 2gb
+maxmemory-policy allkeys-lru
+REDIS_EOF
+
+sudo systemctl restart redis-server
+log "Redis configured"
+
+# Create environment configuration
+log "Step 10: Creating environment configuration..."
+cat > $APP_DIR/backend/.env << 'ENV_EOF'
+# ML Server Configuration
+ML_SERVER_HOST=0.0.0.0
+ML_SERVER_PORT=8001
+ML_SERVER_WORKERS=4
+
+# Database
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=ml_server
+DB_USER=ml_server
+DB_PASSWORD=ml_server_password
+DB_POOL_SIZE=10
+
+# Redis
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_CACHE_TTL=3600
+
+# AWS (for Spot Advisor data fetching)
+AWS_REGION=us-east-1
+SPOT_ADVISOR_URL=https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json
+
+# Models
+MODEL_UPLOAD_DIR=/opt/ml-server/models/uploaded
+DECISION_ENGINE_DIR=/opt/ml-server/decision_engine/uploaded
+MAX_MODEL_FILE_SIZE_MB=500
+
+# Gap Filler
+GAP_FILLER_ENABLED=true
+GAP_FILLER_DEFAULT_LOOKBACK_DAYS=15
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FORMAT=json
+ENV_EOF
+
+log "Environment configuration created"
+
+# Create systemd service
+log "Step 11: Creating systemd service..."
+sudo tee /etc/systemd/system/ml-server-backend.service > /dev/null << SERVICE_EOF
+[Unit]
+Description=ML Server Backend (FastAPI)
+After=network.target postgresql.service redis-server.service
+Wants=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=$USER
+WorkingDirectory=$APP_DIR/backend
+EnvironmentFile=$APP_DIR/backend/.env
+ExecStart=$APP_DIR/backend/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001 --workers 4
+Restart=always
+RestartSec=10
+StandardOutput=append:/var/log/ml-server/backend.log
+StandardError=append:/var/log/ml-server/backend-error.log
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable ml-server-backend
+
+log "Systemd service created"
+
+# Setup frontend
+log "Step 12: Setting up React frontend..."
+cd $APP_DIR/ml-frontend
+
+# Install frontend dependencies
+npm install
+
+# Build frontend
+npm run build
+
+# Configure Nginx
+sudo tee /etc/nginx/sites-available/ml-server << 'NGINX_EOF'
+server {
+    listen 3001 default_server;
+    server_name _;
+
+    root /opt/ml-server/ml-frontend/dist;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://localhost:8001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+    }
+}
+NGINX_EOF
+
+sudo ln -sf /etc/nginx/sites-available/ml-server /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+
+log "Frontend configured"
+
+# Create helper scripts
+log "Step 13: Creating helper scripts..."
+
+# Start script
+cat > $APP_DIR/scripts/start.sh << 'SCRIPT_EOF'
+#!/bin/bash
+echo "Starting ML Server..."
+sudo systemctl start ml-server-backend
+sudo systemctl start nginx
+echo "ML Server started!"
+SCRIPT_EOF
+chmod +x $APP_DIR/scripts/start.sh
+
+# Stop script
+cat > $APP_DIR/scripts/stop.sh << 'SCRIPT_EOF'
+#!/bin/bash
+echo "Stopping ML Server..."
+sudo systemctl stop ml-server-backend
+echo "ML Server stopped!"
+SCRIPT_EOF
+chmod +x $APP_DIR/scripts/stop.sh
+
+# Status script
+cat > $APP_DIR/scripts/status.sh << 'SCRIPT_EOF'
+#!/bin/bash
+echo "=== ML Server Status ==="
+sudo systemctl status ml-server-backend --no-pager
+echo ""
+echo "=== Health Check ==="
+curl -s http://localhost:8001/api/v1/ml/health | jq .
+SCRIPT_EOF
+chmod +x $APP_DIR/scripts/status.sh
+
+# Fetch Spot Advisor data script
+cat > $APP_DIR/scripts/fetch_spot_advisor.sh << 'SCRIPT_EOF'
+#!/bin/bash
+echo "Fetching AWS Spot Advisor data..."
+curl -s https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json \
+    | jq . > /tmp/spot-advisor-data.json
+echo "Spot Advisor data saved to /tmp/spot-advisor-data.json"
+SCRIPT_EOF
+chmod +x $APP_DIR/scripts/fetch_spot_advisor.sh
+
+log "Helper scripts created"
+
+# Installation complete
+log "============================================"
+log "ML Server Installation Complete!"
+log "============================================"
+log ""
+log "✓ Backend: FastAPI on port 8001"
+log "✓ Frontend: React on port 3001"
+log "✓ Database: PostgreSQL (ml_server)"
+log "✓ Cache: Redis"
+log ""
+log "Quick Commands:"
+log "  Start:  $APP_DIR/scripts/start.sh"
+log "  Stop:   $APP_DIR/scripts/stop.sh"
+log "  Status: $APP_DIR/scripts/status.sh"
+log ""
+log "Backend API: http://localhost:8001/api/v1/ml/"
+log "Frontend UI: http://localhost:3001"
+log "Health Check: http://localhost:8001/api/v1/ml/health"
+log "============================================"
+```
+
+**Save as**: `install_ml_server.sh`
+
+**Run**:
+```bash
+chmod +x install_ml_server.sh
+./install_ml_server.sh
+```
+
+---
+
+### Manual Installation Steps
+
+For manual installation or troubleshooting, follow these steps:
+
+#### 1. Install System Dependencies
+
+```bash
+# Ubuntu 22.04/24.04
+sudo apt-get update
+sudo apt-get install -y \
+    python3.11 python3.11-venv python3-pip \
+    postgresql-15 postgresql-contrib \
+    redis-server \
+    nginx \
+    curl wget git unzip \
+    build-essential libpq-dev
+
+# Node.js 20.x LTS
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# AWS CLI v2
+cd /tmp
+curl -s "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip -q awscliv2.zip
+sudo ./aws/install
+```
+
+#### 2. Setup Python Environment
+
+```bash
+# Create virtual environment
+python3.11 -m venv /opt/ml-server/backend/venv
+source /opt/ml-server/backend/venv/bin/activate
+
+# Install dependencies (see requirements.txt above)
+pip install -r requirements.txt
+```
+
+#### 3. Setup Database
+
+```bash
+# Start PostgreSQL
+sudo systemctl start postgresql
+
+# Create database
+sudo -u postgres psql << EOF
+CREATE DATABASE ml_server;
+CREATE USER ml_server WITH ENCRYPTED PASSWORD 'ml_server_password';
+GRANT ALL PRIVILEGES ON DATABASE ml_server TO ml_server;
+\c ml_server
+GRANT ALL ON SCHEMA public TO ml_server;
+EOF
+
+# Run migrations
+cd /opt/ml-server/backend
+alembic upgrade head
+```
+
+#### 4. Setup Redis
+
+```bash
+# Start Redis
+sudo systemctl start redis-server
+
+# Configure for production
+echo "maxmemory 2gb" | sudo tee -a /etc/redis/redis.conf
+echo "maxmemory-policy allkeys-lru" | sudo tee -a /etc/redis/redis.conf
+sudo systemctl restart redis-server
+```
+
+#### 5. Configure Environment
+
+Create `/opt/ml-server/backend/.env` (see environment variables section below)
+
+#### 6. Start Services
+
+```bash
+# Start backend
+sudo systemctl start ml-server-backend
+
+# Build and serve frontend
+cd /opt/ml-server/ml-frontend
+npm install
+npm run build
+sudo systemctl start nginx
+```
+
+---
+
+### Version Reference (from old setup scripts)
+
+**Python Packages**:
+```txt
+# ML Libraries
+numpy==1.24.3
+pandas==2.0.3
+scikit-learn==1.3.0
+xgboost==1.7.6
+lightgbm==4.0.0
+
+# API Framework
+fastapi==0.103.0
+uvicorn==0.23.2
+pydantic==2.3.0
+
+# Database
+asyncpg==0.29.0
+sqlalchemy==2.0.21
+alembic==1.12.0
+
+# AWS
+boto3==1.28.25
+
+# Redis
+redis==5.0.0
+```
+
+**System Packages**:
+- Python: 3.10+ (3.11 recommended)
+- PostgreSQL: 15+
+- Redis: 7+
+- Node.js: 20.x LTS
+- Nginx: 1.18+
+
+---
+
+### Verification
+
+After installation, verify everything is working:
+
+```bash
+# Check services
+sudo systemctl status ml-server-backend
+sudo systemctl status postgresql
+sudo systemctl status redis-server
+sudo systemctl status nginx
+
+# Test backend API
+curl http://localhost:8001/api/v1/ml/health
+
+# Test database connection
+psql -h localhost -U ml_server -d ml_server -c "SELECT 1;"
+
+# Test Redis
+redis-cli ping
+
+# Fetch Spot Advisor data
+curl -s https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json | jq . | head -20
+```
+
+---
+
 ## 🚀 Deployment Configuration
 
 ### Environment Variables
@@ -1062,6 +1645,303 @@ networks:
 5. Frontend (WebSocket stream):
    - Live updates on dashboard
    - Shows prediction in real-time chart
+```
+
+---
+
+## 🎯 CAST AI Decision Engines (Complete Feature Set)
+
+### Overview
+All decision engines live in the ML Server for centralized decision-making. The ML Server analyzes cluster state, pricing data, and workload patterns, then returns recommendations to the Core Platform for execution.
+
+**Key Principle**: ML Server makes ALL decisions, Core Platform executes them via remote APIs.
+
+---
+
+### 1. Spot Optimizer Engine
+
+**Purpose**: Select optimal Spot instances using AWS Spot Advisor public data
+
+**Data Sources**:
+- AWS Spot Advisor JSON: `https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json`
+- Historical Spot prices from `spot_prices` table
+- On-Demand prices from `on_demand_prices` table
+- **NO SPS (Spot Placement Scores)** - User explicitly requested NOT to use
+
+**Risk Score Formula** (0.0 = unsafe, 1.0 = safe):
+```
+Risk Score = (0.60 × Public_Rate_Score) +
+             (0.25 × Volatility_Score) +
+             (0.10 × Gap_Score) +
+             (0.05 × Time_Score)
+
+Where:
+- Public_Rate_Score: From AWS Spot Advisor (<5% = 1.0, >20% = 0.0)
+- Volatility_Score: Price stability over last 7 days
+- Gap_Score: Current price vs On-Demand (lower = better)
+- Time_Score: Hour of day (off-peak hours = higher score)
+```
+
+**Output**:
+- Top 5 Spot instance recommendations ranked by risk score
+- Fallback On-Demand instances if all Spot options too risky
+- Estimated monthly savings per recommendation
+
+**File**: `decision_engine/spot_optimizer.py`
+
+---
+
+### 2. Bin Packing Engine (Tetris Algorithm)
+
+**Purpose**: Consolidate workloads to minimize node count and maximize resource utilization
+
+**Algorithm**:
+1. Analyze current pod placement across nodes
+2. Calculate node utilization (CPU + memory)
+3. Identify underutilized nodes (< 50% allocated)
+4. Simulate pod migrations to consolidate workloads
+5. Return drain plan for empty/underutilized nodes
+
+**Constraints**:
+- Respect pod anti-affinity rules
+- Maintain node diversity (AZ spread)
+- Ensure sufficient capacity for pod migrations
+- Graceful drain with 90-second grace period
+
+**Output**:
+- List of nodes to drain and terminate
+- Pod migration plan (source node → target node)
+- Estimated savings from reduced node count
+
+**File**: `decision_engine/bin_packing.py`
+
+---
+
+### 3. Rightsizing Engine (Deterministic Lookup)
+
+**Purpose**: Match instance sizes to actual workload requirements
+
+**Approach**: Deterministic lookup tables (NOT ML-based for Day Zero)
+
+**Lookup Table Example**:
+```python
+# If pod requests 2 CPU + 4GB RAM:
+INSTANCE_LOOKUP = {
+    (2.0, 4.0): ["t3.large", "t3a.large", "m5.large"],
+    (4.0, 8.0): ["m5.xlarge", "c5.xlarge", "t3.xlarge"],
+    (8.0, 16.0): ["m5.2xlarge", "c5.2xlarge"],
+    # ...
+}
+```
+
+**Analysis**:
+1. Query actual pod resource usage (last 7 days avg)
+2. Compare actual usage vs requested resources
+3. If actual < 50% of requested, recommend downsize
+4. If actual > 80% of requested, recommend upsize
+5. Use lookup table to find matching instance types
+
+**Output**:
+- Oversized instances with downsize recommendations
+- Undersized instances with upsize recommendations
+- Estimated cost savings from rightsizing
+
+**File**: `decision_engine/rightsizing.py`
+
+---
+
+### 4. Office Hours Scheduler
+
+**Purpose**: Auto-scale dev/staging environments based on time schedules
+
+**Configuration**:
+```json
+{
+  "environment": "dev",
+  "office_hours": {
+    "weekdays": {"start": "08:00", "end": "18:00"},
+    "weekends": {"enabled": false}
+  },
+  "scale_down_replicas": 0,
+  "scale_down_instance_count": 1  // Minimum nodes
+}
+```
+
+**Logic**:
+- Check current time (UTC)
+- If outside office hours:
+  - Scale deployments to 0 replicas (or configured minimum)
+  - Drain and terminate excess nodes
+- If inside office hours:
+  - Scale deployments back to original replicas
+  - Launch nodes as needed
+
+**Output**:
+- Scale commands for deployments
+- Node termination/launch plan
+- Estimated monthly savings
+
+**File**: `decision_engine/scheduler.py`
+
+---
+
+### 5. Ghost Probe Scanner
+
+**Purpose**: Detect zombie EC2 instances not in Kubernetes clusters
+
+**Day Zero Capability**: Works immediately without customer historical data
+
+**Algorithm**:
+1. Core Platform sends list of running EC2 instances from customer account
+2. Core Platform sends list of K8s nodes from cluster
+3. ML Server compares: EC2 instances vs K8s nodes
+4. Identifies "ghost" instances: EC2 running but NOT in K8s
+
+**Ghost Detection**:
+```python
+ec2_instances = {i-1234, i-5678, i-9012}
+k8s_nodes = {i-1234, i-5678}
+ghost_instances = ec2_instances - k8s_nodes  # {i-9012}
+```
+
+**Safety**:
+- 24-hour grace period before flagging as ghost
+- Exclude instances with specific tags (e.g., `cloudoptim:ignore`)
+- Manual approval before termination
+
+**Output**:
+- List of ghost instances with metadata
+- Termination recommendations
+- Estimated cost savings from cleanup
+
+**File**: `decision_engine/ghost_probe.py`
+
+---
+
+### 6. Zombie Volume Cleanup
+
+**Purpose**: Identify and remove unattached EBS volumes
+
+**Algorithm**:
+1. Core Platform sends list of all EBS volumes
+2. Filter volumes with status = "available" (unattached)
+3. Check volume age (last attach time)
+4. If unattached > 7 days, flag as zombie
+
+**Safety Checks**:
+- Exclude volumes with snapshots (might be backups)
+- Exclude volumes with specific tags (e.g., `backup:true`)
+- Grace period: 7 days minimum
+- Alert customer before deletion
+
+**Output**:
+- List of zombie volumes with age and size
+- Deletion recommendations
+- Estimated monthly savings from storage cleanup
+
+**File**: `decision_engine/volume_cleanup.py`
+
+---
+
+### 7. Network Optimizer (Cross-AZ Traffic Affinity)
+
+**Purpose**: Optimize cross-AZ data transfer costs by co-locating pods with their dependencies
+
+**Problem**: AWS charges $0.01/GB for cross-AZ traffic (ingress/egress between AZs)
+
+**Analysis**:
+1. Core Platform sends pod communication matrix (pod A → pod B traffic volume)
+2. Identify high-traffic pod pairs
+3. Check if pods are in different AZs
+4. Recommend pod re-scheduling to same AZ
+
+**Algorithm**:
+```python
+# If pod-api (us-east-1a) → pod-db (us-east-1b) = 100GB/day
+# Cost: 100GB × $0.01 = $1/day = $30/month
+# Recommendation: Move pod-db to us-east-1a (same AZ as pod-api)
+```
+
+**Constraints**:
+- Maintain AZ diversity for high-availability workloads
+- Only optimize for pods with > 10GB/day cross-AZ traffic
+
+**Output**:
+- Pod affinity rules to add
+- Estimated monthly savings from reduced cross-AZ traffic
+
+**File**: `decision_engine/network_optimizer.py`
+
+---
+
+### 8. OOMKilled Auto-Remediation
+
+**Purpose**: Detect OOMKilled pods and automatically increase memory limits
+
+**Detection**:
+1. Core Platform sends pod events (last 24 hours)
+2. Filter events with reason = "OOMKilled"
+3. Analyze pod memory requests vs actual usage
+
+**Auto-Fix Logic**:
+```python
+if pod.status == "OOMKilled":
+    current_memory = pod.spec.resources.requests.memory
+    recommended_memory = current_memory × 1.5  # 50% increase
+    return UpdateDeployment(memory=recommended_memory)
+```
+
+**Safety**:
+- Maximum memory increase: 2x current limit
+- If OOMKilled > 3 times, escalate to manual review
+- Monitor memory usage after fix
+
+**Output**:
+- Deployment update commands with new memory limits
+- OOMKilled pod history
+- Recommended memory settings
+
+**File**: `decision_engine/oomkilled_remediation.py`
+
+---
+
+### Decision Engine API Endpoints
+
+All engines are invoked via ML Server API:
+
+```http
+POST /api/v1/ml/decision/spot-optimize
+POST /api/v1/ml/decision/bin-pack
+POST /api/v1/ml/decision/rightsize
+POST /api/v1/ml/decision/schedule
+POST /api/v1/ml/decision/ghost-probe
+POST /api/v1/ml/decision/volume-cleanup
+POST /api/v1/ml/decision/network-optimize
+POST /api/v1/ml/decision/oomkilled-remediate
+```
+
+**Common Request Schema**:
+```json
+{
+  "request_id": "req-12345",
+  "cluster_id": "cluster-abc",
+  "decision_type": "spot_optimize",
+  "current_state": { /* ClusterState */ },
+  "requirements": { /* Decision-specific params */ },
+  "constraints": { /* Safety constraints */ }
+}
+```
+
+**Common Response Schema**:
+```json
+{
+  "request_id": "req-12345",
+  "decision_type": "spot_optimize",
+  "recommendations": [ /* List of recommendations */ ],
+  "confidence_score": 0.95,
+  "estimated_savings": 450.00,
+  "execution_plan": [ /* Step-by-step execution */ ]
+}
 ```
 
 ---
