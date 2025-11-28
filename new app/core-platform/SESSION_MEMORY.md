@@ -1,8 +1,9 @@
-# Central Server - Session Memory & Documentation
+# Core Platform - Session Memory & Documentation
 
 ## 📋 Overview
-**Component**: Central Server (Backend, Database, Admin Frontend)
-**Purpose**: Main control plane - handles all customer data, orchestration, decision execution, and admin interface
+**Component**: Core Platform (Backend, Database, Admin Frontend)
+**Purpose**: Main control plane for agentless Kubernetes cost optimization (CAST AI competitor)
+**Architecture**: Agentless (EventBridge + SQS + Remote Kubernetes API)
 **Instance Type**: Primary server (handles all core logic)
 **Created**: 2025-11-28
 **Last Updated**: 2025-11-28
@@ -13,46 +14,52 @@
 
 ### 1. Central Database Management
 - PostgreSQL database with all customer and cluster data
-- Time-series metrics storage (Prometheus/Thanos)
+- Time-series metrics storage
 - State management for all clusters
 - Historical optimization records
 - Customer configuration and billing data
 
-### 2. API & Orchestration
-- Main REST API for all operations
-- Coordinates between ML Server and Client Agents
-- Executes optimization decisions
-- Handles AWS API interactions (EC2, SQS, EventBridge)
-- Kubernetes API interactions (remote cluster management)
+### 2. Agentless Cluster Management
+- **Remote Kubernetes API Access** - Direct API calls to customer clusters (no agents)
+- **AWS EventBridge + SQS Polling** - Receive Spot interruption warnings
+- **AWS EC2 API** - Launch/terminate instances, query Spot prices
+- **No DaemonSets** - Zero footprint in customer clusters
 
-### 3. Admin Frontend
+### 3. API & Orchestration
+- Main REST API for all operations
+- Coordinates with ML Server for decisions
+- Executes optimization plans remotely
+- Handles AWS API interactions (EC2, SQS, EventBridge)
+- Remote Kubernetes API interactions
+
+### 4. Admin Frontend
 - Real-time cost monitoring dashboard
 - Live comparison: predictions vs actual data
 - Model upload and management interface
 - Customer configuration UI
 - Optimization history and analytics
-- Gap filling tool UI (query instance data, fill gaps)
+- Gap filling tool UI
 
-### 4. Decision Execution Engine
+### 5. Decision Execution Engine
 - Receives recommendations from ML Server
 - Validates safety checks
-- Executes optimization plans
+- Executes optimization plans via remote K8s API
 - Handles rollback scenarios
 - Monitors execution status
 
-### 5. Event Processing
-- SQS queue polling for Spot interruption warnings
-- EventBridge event routing
-- Real-time cluster state updates
+### 6. Event Processing (Agentless)
+- **SQS Queue Polling** for Spot interruption warnings (every 5 seconds)
+- **EventBridge Event Routing** from customer AWS accounts
+- Real-time cluster state updates via remote K8s API
 - Webhook notifications (Slack, email)
 
 ---
 
-## 🔌 Integration Points (Common Components)
+## 🔌 Integration Points (Agentless Architecture)
 
 ### A. Communication with ML Server
 **Protocol**: REST API + WebSocket
-**Direction**: Central → ML (request/response)
+**Direction**: Core Platform → ML Server (request/response)
 
 **Endpoints Called on ML Server**:
 - `POST /api/v1/ml/decision/spot-optimize` - Get Spot instance recommendations
@@ -62,30 +69,162 @@
 
 **Data Flow**:
 ```
-Central Server → ML Server: Decision request (cluster state + requirements)
-ML Server → Central Server: Recommendations + execution plan
-Central Server: Validates and executes plan
-Central Server: Stores results in database
+Core Platform → ML Server: Decision request (cluster state + requirements)
+ML Server → Core Platform: Recommendations + execution plan
+Core Platform: Validates and executes plan via remote K8s API
+Core Platform: Stores results in database
 ```
 
-### B. Communication with Client Agents
-**Protocol**: REST API (Client polls Central) + WebSocket (real-time updates)
-**Endpoints Exposed**:
-- `GET /api/v1/client/tasks` - Client polls for pending tasks
-- `POST /api/v1/client/metrics` - Client sends cluster metrics
-- `POST /api/v1/client/events` - Client sends cluster events
-- `WS /api/v1/client/stream` - Real-time task streaming
+### B. Remote Kubernetes API Integration (NO AGENTS)
+**Protocol**: HTTPS to customer Kubernetes API server
+**Authentication**: Service Account Token (provided by customer)
+
+**Endpoints Called on Customer K8s API**:
+```
+GET  /api/v1/nodes                              - List cluster nodes
+GET  /api/v1/pods                               - List all pods
+GET  /apis/metrics.k8s.io/v1beta1/nodes        - Get node metrics
+GET  /apis/metrics.k8s.io/v1beta1/pods         - Get pod metrics
+POST /api/v1/namespaces/{ns}/pods/{pod}/eviction  - Evict pod (drain)
+PATCH /api/v1/nodes/{name}                      - Cordon/uncordon node
+PATCH /apis/apps/v1/namespaces/{ns}/deployments/{name}  - Update deployment
+```
+
+**RBAC Required in Customer Cluster**:
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cloudoptim
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cloudoptim
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cloudoptim
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cloudoptim
+subjects:
+  - kind: ServiceAccount
+    name: cloudoptim
+    namespace: kube-system
+```
 
 **Data Flow**:
 ```
-Client Agent → Central Server: Metrics, events, status updates
-Central Server → Client Agent: Tasks to execute (scale, migrate, etc.)
-Client Agent: Executes tasks on Kubernetes cluster
-Client Agent → Central Server: Execution results
+Core Platform → Customer K8s API: List nodes, get metrics
+Core Platform: Analyze cluster state
+Core Platform → ML Server: Request optimization decisions
+ML Server → Core Platform: Recommendations
+Core Platform → Customer K8s API: Execute optimization (drain, cordon, etc.)
+Core Platform → AWS EC2 API: Launch/terminate instances
 ```
 
-### C. Shared Data Schemas (COMMON)
-**Location**: `/common/schemas/` (shared across all servers)
+### C. AWS EventBridge + SQS Integration
+**Purpose**: Receive Spot instance interruption warnings (2-minute notice)
+
+**Customer Setup**:
+1. Create EventBridge rule in customer AWS account:
+```json
+{
+  "source": ["aws.ec2"],
+  "detail-type": ["EC2 Spot Instance Interruption Warning"],
+  "detail": {
+    "instance-id": [{"prefix": ""}]
+  }
+}
+```
+
+2. Create SQS queue: `cloudoptim-spot-warnings-{customer_id}`
+
+3. EventBridge rule targets SQS queue
+
+**Core Platform Polling**:
+- Poll SQS queue every 5 seconds
+- Receive Spot interruption warnings
+- Process event within 2 minutes (before termination)
+- Drain node via remote K8s API
+- Launch replacement instance via EC2 API
+
+**SQS Message Format**:
+```json
+{
+  "version": "0",
+  "id": "12345",
+  "detail-type": "EC2 Spot Instance Interruption Warning",
+  "source": "aws.ec2",
+  "time": "2025-11-28T10:00:00Z",
+  "detail": {
+    "instance-id": "i-1234567890abcdef0",
+    "instance-action": "terminate"
+  }
+}
+```
+
+### D. AWS EC2 API Integration
+**Protocol**: AWS SDK (boto3)
+**Authentication**: IAM Role (cross-account assume role)
+
+**Operations**:
+- `RunInstances` - Launch new Spot/On-Demand instances
+- `TerminateInstances` - Terminate old instances
+- `DescribeInstances` - Query instance details
+- `DescribeSpotPriceHistory` - Get historical Spot prices
+- `GetSpotPlacementScores` - Get interruption risk scores
+- `CreateTags` - Tag instances with cluster info
+
+**IAM Permissions Required**:
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:TerminateInstances",
+        "ec2:DescribeInstances",
+        "ec2:DescribeSpotPriceHistory",
+        "ec2:GetSpotPlacementScores",
+        "ec2:CreateTags"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes"
+      ],
+      "Resource": "arn:aws:sqs:*:*:cloudoptim-*"
+    }
+  ]
+}
+```
+
+### E. Shared Data Schemas (COMMON)
+**Location**: `/common/schemas/` (shared with ML Server)
 
 ```python
 # Common data models
@@ -106,136 +245,13 @@ class DecisionRequest(BaseModel):
     requirements: Dict[str, Any]
     constraints: Dict[str, Any]
 
-class OptimizationTask(BaseModel):
+class RemoteK8sTask(BaseModel):
     task_id: str
     cluster_id: str
-    task_type: str  # launch_nodes, drain_nodes, resize
+    task_type: str  # drain_node, cordon_node, scale_deployment
     parameters: Dict[str, Any]
     priority: int
     deadline: datetime
-```
-
-### D. Database Schema (OWNED BY CENTRAL SERVER)
-**Primary Database**: PostgreSQL 15+
-**Time-Series DB**: Prometheus + Thanos (long-term storage)
-
-**Core Tables**:
-```sql
--- Customers
-customers (
-    customer_id UUID PRIMARY KEY,
-    company_name VARCHAR(255),
-    email VARCHAR(255),
-    aws_role_arn VARCHAR(512),
-    sqs_queue_url VARCHAR(512),
-    external_id VARCHAR(128),
-    status VARCHAR(50),
-    created_at TIMESTAMP
-)
-
--- Clusters
-clusters (
-    cluster_id UUID PRIMARY KEY,
-    customer_id UUID REFERENCES customers,
-    cluster_name VARCHAR(255),
-    k8s_api_endpoint VARCHAR(512),
-    k8s_token TEXT,
-    region VARCHAR(50),
-    node_count INT,
-    status VARCHAR(50),
-    created_at TIMESTAMP
-)
-
--- Nodes
-nodes (
-    node_id UUID PRIMARY KEY,
-    cluster_id UUID REFERENCES clusters,
-    node_name VARCHAR(255),
-    instance_id VARCHAR(50),
-    instance_type VARCHAR(50),
-    availability_zone VARCHAR(50),
-    node_type VARCHAR(20), -- spot, on-demand
-    status VARCHAR(50),
-    created_at TIMESTAMP
-)
-
--- Spot Events
-spot_events (
-    event_id UUID PRIMARY KEY,
-    cluster_id UUID REFERENCES clusters,
-    instance_id VARCHAR(50),
-    event_type VARCHAR(50), -- interruption_warning, terminated
-    received_at TIMESTAMP,
-    action_taken VARCHAR(255),
-    replacement_instance_id VARCHAR(50)
-)
-
--- Optimization History
-optimization_history (
-    optimization_id UUID PRIMARY KEY,
-    cluster_id UUID REFERENCES clusters,
-    optimization_type VARCHAR(50),
-    recommendations JSONB,
-    execution_plan JSONB,
-    estimated_savings DECIMAL(10,2),
-    actual_savings DECIMAL(10,2),
-    status VARCHAR(50),
-    executed_at TIMESTAMP
-)
-
--- Customer Config
-customer_config (
-    config_id UUID PRIMARY KEY,
-    customer_id UUID REFERENCES customers,
-    config_key VARCHAR(100),
-    config_value JSONB,
-    updated_at TIMESTAMP
-)
-
--- Metrics Time Series (summary)
-metrics_summary (
-    metric_id BIGSERIAL PRIMARY KEY,
-    cluster_id UUID REFERENCES clusters,
-    metric_type VARCHAR(50), -- cpu, memory, cost
-    value DECIMAL(10,2),
-    timestamp TIMESTAMP
-)
-```
-
-### E. AWS Integration
-**IAM Role**: Cross-account role assumption
-**Services Used**:
-- **EC2**: Launch/terminate instances, query Spot prices
-- **SQS**: Poll Spot interruption events
-- **EventBridge**: Receive cluster events
-- **CloudWatch**: Fetch metrics (optional)
-
-**Permissions Required**:
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "ec2:DescribeInstances",
-                "ec2:DescribeSpotPriceHistory",
-                "ec2:RunInstances",
-                "ec2:TerminateInstances",
-                "ec2:CreateTags"
-            ],
-            "Resource": "*"
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "sqs:ReceiveMessage",
-                "sqs:DeleteMessage"
-            ],
-            "Resource": "arn:aws:sqs:*:*:cloudoptim-*"
-        }
-    ]
-}
 ```
 
 ---
@@ -243,12 +259,12 @@ metrics_summary (
 ## 📁 Directory Structure
 
 ```
-central-server/
+core-platform/
 ├── SESSION_MEMORY.md          # This file
 ├── README.md
 ├── requirements.txt
 ├── config/
-│   ├── common.yaml            # Shared with other servers
+│   ├── common.yaml            # Shared with ML Server
 │   ├── database.yaml          # Database configuration
 │   └── aws.yaml               # AWS configuration
 ├── api/
@@ -258,7 +274,7 @@ central-server/
 │   │   ├── clusters.py        # Cluster management
 │   │   ├── optimization.py    # Optimization endpoints
 │   │   ├── ml_proxy.py        # Proxy to ML Server
-│   │   ├── client_api.py      # Client agent endpoints
+│   │   ├── events.py          # EventBridge/SQS endpoints
 │   │   └── admin.py           # Admin endpoints
 │   ├── middleware/
 │   │   ├── auth.py
@@ -275,10 +291,13 @@ central-server/
 │   ├── optimizer_service.py   # Orchestrates optimization
 │   ├── executor_service.py    # Executes optimization plans
 │   ├── spot_handler.py        # Handles Spot interruptions
-│   ├── k8s_client.py          # Kubernetes API client
-│   ├── aws_client.py          # AWS API client
+│   ├── k8s_remote_client.py   # Remote Kubernetes API client (NO AGENT)
+│   ├── eventbridge_poller.py  # SQS poller for Spot warnings
+│   ├── aws_client.py          # AWS EC2 API client
 │   ├── ml_client.py           # ML Server client
-│   └── metrics_collector.py   # Collects cluster metrics
+│   ├── metrics_collector.py   # Collects cluster metrics via remote K8s API
+│   ├── ghost_probe_scanner.py # Scans for zombie EC2 instances
+│   └── volume_cleanup.py      # Zombie volume cleanup
 ├── admin-frontend/
 │   ├── package.json
 │   ├── src/
@@ -297,49 +316,55 @@ central-server/
 │   │       └── index.ts           # TypeScript types
 │   └── public/
 ├── scripts/
-│   ├── install.sh
-│   ├── setup_database.sh
-│   ├── migrate_database.sh
-│   ├── start_server.sh
-│   └── deploy_frontend.sh
+│   ├── install.sh             # Installation script
+│   ├── setup_database.sh      # Database setup
+│   ├── migrate_database.sh    # Run migrations
+│   └── start_server.sh        # Start server
 ├── tests/
 │   ├── test_api.py
 │   ├── test_services.py
-│   └── test_integration.py
+│   ├── test_k8s_client.py
+│   └── test_eventbridge.py
 └── docs/
-    ├── API_REFERENCE.md
-    ├── DATABASE_SCHEMA.md
-    └── DEPLOYMENT.md
+    ├── API_SPEC.md
+    ├── DEPLOYMENT.md
+    └── CUSTOMER_ONBOARDING.md
 ```
 
 ---
 
 ## 🔧 Technology Stack
 
-### Backend
+### Core Framework
 - **Language**: Python 3.10+
-- **Framework**: FastAPI 0.103+
-- **Database ORM**: SQLAlchemy 2.0+
+- **API Framework**: FastAPI 0.103+
+- **ASGI Server**: Uvicorn
+
+### Database & Caching
+- **Database**: PostgreSQL 15+
+- **ORM**: SQLAlchemy 2.0+
 - **Migrations**: Alembic
-- **Background Tasks**: Celery + Redis
-- **WebSocket**: FastAPI WebSocket
-
-### Frontend (Admin Dashboard)
-- **Framework**: React 18+ with TypeScript
-- **State Management**: Redux Toolkit or Zustand
-- **UI Library**: Material-UI or Tailwind CSS
-- **Charts**: Recharts or Chart.js
-- **Real-time**: Socket.IO or native WebSocket
-
-### Database & Storage
-- **Primary DB**: PostgreSQL 15+
-- **Time-series**: Prometheus + Thanos
 - **Cache**: Redis 7+
-- **Message Queue**: Redis (Celery) or RabbitMQ
 
-### AWS SDK
-- **boto3**: AWS SDK for Python
-- **Kubernetes**: kubernetes-client
+### AWS Integration
+- **boto3**: 1.28+ - AWS SDK for Python
+- **Spot Warnings**: EventBridge + SQS
+- **EC2 Operations**: RunInstances, TerminateInstances, etc.
+
+### Kubernetes Integration (Remote API)
+- **kubernetes-client**: Official Python client
+- **Authentication**: Service Account Token
+- **NO AGENTS**: All operations via remote API calls
+
+### Admin Frontend
+- **Framework**: React 18+ with TypeScript
+- **State Management**: Redux Toolkit
+- **UI Library**: Material-UI (MUI)
+- **Charts**: Recharts for cost visualization
+
+### Monitoring
+- **prometheus-client**: Metrics export
+- **python-json-logger**: Structured logging
 
 ---
 
@@ -350,364 +375,316 @@ central-server/
 # Server Configuration
 CENTRAL_SERVER_HOST=0.0.0.0
 CENTRAL_SERVER_PORT=8000
-CENTRAL_SERVER_WORKERS=8
+CENTRAL_SERVER_WORKERS=4
 
 # Database
 DB_HOST=postgres.internal
 DB_PORT=5432
 DB_NAME=cloudoptim
-DB_USER=central_server
+DB_USER=cloudoptim
 DB_PASSWORD=xxx
-DB_POOL_SIZE=20
+
+# Redis Cache
+REDIS_HOST=redis.internal
+REDIS_PORT=6379
 
 # ML Server Connection
 ML_SERVER_URL=http://ml-server:8001
 ML_SERVER_API_KEY=xxx
 
-# Redis
-REDIS_HOST=redis.internal
-REDIS_PORT=6379
-CELERY_BROKER_URL=redis://redis.internal:6379/0
-
-# AWS
+# AWS Configuration
 AWS_REGION=us-east-1
-AWS_ACCOUNT_ID=123456789012
 
-# Security
-JWT_SECRET_KEY=xxx
-API_KEY_SALT=xxx
+# EventBridge/SQS Polling
+SQS_POLL_INTERVAL_SECONDS=5
+SQS_MAX_MESSAGES=10
+SQS_VISIBILITY_TIMEOUT=30
+SQS_WAIT_TIME_SECONDS=20  # Long polling
 
-# Frontend
-FRONTEND_URL=http://localhost:3000
-CORS_ORIGINS=["http://localhost:3000"]
-```
+# Remote Kubernetes API
+K8S_API_TIMEOUT_SECONDS=30
+K8S_API_RETRY_ATTEMPTS=3
+K8S_API_BACKOFF_FACTOR=2
 
-### Docker Compose
-```yaml
-services:
-  central-server:
-    build: ./central-server
-    ports:
-      - "8000:8000"
-    environment:
-      - DB_HOST=postgres
-      - REDIS_HOST=redis
-      - ML_SERVER_URL=http://ml-server:8001
-    depends_on:
-      - postgres
-      - redis
-      - ml-server
+# Optimization Settings
+OPTIMIZATION_INTERVAL_MINUTES=10
+BIN_PACKING_ENABLED=true
+RIGHTSIZING_ENABLED=true
+OFFICE_HOURS_ENABLED=true
 
-  postgres:
-    image: postgres:15
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_DB=cloudoptim
-      - POSTGRES_USER=central_server
-      - POSTGRES_PASSWORD=xxx
-
-  redis:
-    image: redis:7
-    ports:
-      - "6379:6379"
-
-  admin-frontend:
-    build: ./central-server/admin-frontend
-    ports:
-      - "3000:3000"
-    environment:
-      - REACT_APP_API_URL=http://localhost:8000
+# Feature Flags
+GHOST_PROBE_SCANNER_ENABLED=true
+ZOMBIE_VOLUME_CLEANUP_ENABLED=true
+NETWORK_OPTIMIZATION_ENABLED=true
+OOM_REMEDIATION_ENABLED=true
 ```
 
 ---
 
-## 🔄 Core Workflows
+## 📊 Database Schema
 
-### 1. Spot Interruption Handling
+### Core Tables
+
+```sql
+-- Customers
+CREATE TABLE customers (
+    customer_id UUID PRIMARY KEY,
+    company_name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    aws_role_arn VARCHAR(512) NOT NULL,
+    sqs_queue_url VARCHAR(512) NOT NULL,
+    external_id VARCHAR(128) NOT NULL,
+    status VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Clusters
+CREATE TABLE clusters (
+    cluster_id UUID PRIMARY KEY,
+    customer_id UUID REFERENCES customers(customer_id),
+    cluster_name VARCHAR(255) NOT NULL,
+    k8s_api_endpoint VARCHAR(512) NOT NULL,
+    k8s_token TEXT NOT NULL,  -- Service account token (encrypted)
+    region VARCHAR(50) NOT NULL,
+    node_count INT NOT NULL DEFAULT 0,
+    status VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Nodes
+CREATE TABLE nodes (
+    node_id UUID PRIMARY KEY,
+    cluster_id UUID REFERENCES clusters(cluster_id),
+    node_name VARCHAR(255) NOT NULL,
+    instance_id VARCHAR(50) NOT NULL,
+    instance_type VARCHAR(50) NOT NULL,
+    availability_zone VARCHAR(50) NOT NULL,
+    node_type VARCHAR(20) NOT NULL,  -- spot, on-demand
+    status VARCHAR(50) NOT NULL,
+    cpu_cores DECIMAL(10,2),
+    memory_gb DECIMAL(10,2),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Spot Events
+CREATE TABLE spot_events (
+    event_id UUID PRIMARY KEY,
+    cluster_id UUID REFERENCES clusters(cluster_id),
+    instance_id VARCHAR(50) NOT NULL,
+    event_type VARCHAR(50) NOT NULL,  -- interruption_warning, terminated
+    event_time TIMESTAMP NOT NULL,
+    received_at TIMESTAMP NOT NULL,
+    action_taken VARCHAR(255),
+    replacement_instance_id VARCHAR(50),
+    drain_duration_seconds INT,
+    processed_at TIMESTAMP
+);
+
+-- Optimization History
+CREATE TABLE optimization_history (
+    optimization_id UUID PRIMARY KEY,
+    cluster_id UUID REFERENCES clusters(cluster_id),
+    optimization_type VARCHAR(50) NOT NULL,  -- spot_optimize, bin_pack, rightsize
+    recommendations JSONB NOT NULL,
+    execution_plan JSONB NOT NULL,
+    estimated_savings DECIMAL(10,2),
+    actual_savings DECIMAL(10,2),
+    status VARCHAR(50) NOT NULL,
+    executed_at TIMESTAMP NOT NULL,
+    completed_at TIMESTAMP
+);
+
+-- Customer Config
+CREATE TABLE customer_config (
+    config_id UUID PRIMARY KEY,
+    customer_id UUID REFERENCES customers(customer_id),
+    config_key VARCHAR(100) NOT NULL,
+    config_value JSONB NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE(customer_id, config_key)
+);
+
+-- Metrics Summary
+CREATE TABLE metrics_summary (
+    metric_id BIGSERIAL PRIMARY KEY,
+    cluster_id UUID REFERENCES clusters(cluster_id),
+    metric_type VARCHAR(50) NOT NULL,  -- cpu, memory, cost
+    value DECIMAL(10,2) NOT NULL,
+    timestamp TIMESTAMP NOT NULL
+);
+
+-- Ghost Instances (zombie EC2 instances not in K8s)
+CREATE TABLE ghost_instances (
+    ghost_id UUID PRIMARY KEY,
+    customer_id UUID REFERENCES customers(customer_id),
+    instance_id VARCHAR(50) NOT NULL,
+    instance_type VARCHAR(50),
+    region VARCHAR(50),
+    detected_at TIMESTAMP NOT NULL,
+    terminated_at TIMESTAMP,
+    status VARCHAR(50) NOT NULL  -- detected, flagged, terminated
+);
 ```
-AWS EventBridge → SQS Queue
-                    ↓
-Central Server polls SQS (every 5 seconds)
-                    ↓
-Parse interruption event (instance_id, 2-min warning)
-                    ↓
-Query database: Find cluster + node
-                    ↓
-Request ML Server: Get replacement recommendation
-                    ↓
-Execute: Launch On-Demand replacement
-                    ↓
-Send task to Client Agent: Drain dying node
-                    ↓
-Wait for new node Ready
-                    ↓
-(Later) Replace On-Demand with Spot when safe
-```
-
-### 2. Optimization Request Flow
-```
-Admin triggers optimization (or scheduled job)
-                    ↓
-Central Server: Fetch cluster state from DB
-                    ↓
-Central Server → ML Server: POST /api/v1/ml/decision/spot-optimize
-                    ↓
-ML Server: Analyze, return recommendations
-                    ↓
-Central Server: Validate safety checks
-                    ↓
-Central Server: Store plan in optimization_history
-                    ↓
-Central Server: Call AWS EC2 API (launch Spot instances)
-                    ↓
-Central Server: Send tasks to Client Agent (update labels, drain)
-                    ↓
-Client Agent: Executes tasks, reports back
-                    ↓
-Central Server: Update database, calculate savings
-```
-
-### 3. Data Gap Filling Workflow
-```
-Admin uploads new model (trained on old data)
-                    ↓
-Admin opens Gap Filler UI
-                    ↓
-UI: Query instance for required data range
-                    ↓
-Central Server: Request ML Server to identify gaps
-                    ↓
-ML Server: Return gap details (dates, data types)
-                    ↓
-UI: Display gaps to admin
-                    ↓
-Admin clicks "Fill Gaps"
-                    ↓
-Central Server → ML Server: POST /api/v1/ml/data/fill-gaps
-                    ↓
-ML Server: Query AWS APIs, fill missing data
-                    ↓
-ML Server: Return filled data
-                    ↓
-Central Server: Store in database
-                    ↓
-UI: Display success, show filled records
-```
-
----
-
-## 📊 Admin Frontend Features
-
-### 1. Real-Time Cost Dashboard
-**Components**:
-- Current cost per hour (live updates)
-- Baseline cost (without CloudOptim)
-- Savings percentage
-- Projected monthly savings
-- 7-day savings trend chart
-
-**Data Source**: WebSocket stream from Central Server
-**Update Frequency**: Every 60 seconds
-
-### 2. Prediction vs Actual Comparison
-**Purpose**: Show how ML predictions compare to reality
-**Metrics Displayed**:
-- Predicted Spot interruption rate vs Actual
-- Predicted cost savings vs Actual savings
-- Predicted resource usage vs Actual usage
-
-**Visualization**: Side-by-side bar charts, line graphs
-
-### 3. Model Upload Interface
-**Features**:
-- Upload trained model files (.model, .pkl)
-- Specify model version and metadata
-- View currently active models
-- Switch between model versions
-- Test model with sample data
-
-**Backend**: Stores models in `/models/saved/`, updates registry
-
-### 4. Gap Filler Tool
-**UI Flow**:
-1. Display model training date
-2. Show current date and required lookback
-3. Calculate and display gaps
-4. Button: "Fill Gaps"
-5. Progress indicator during filling
-6. Summary: Records filled, sources used, duration
-
-**Implementation**: React component calling `/api/v1/admin/gap-filler`
-
----
-
-## 🔗 Common Components Shared Across Servers
-
-### 1. Authentication Middleware
-**Location**: `/common/auth/` (to be created)
-**Implementation**: JWT tokens + API keys
-**Used By**: All servers validate requests
-
-### 2. Shared Pydantic Models
-**Location**: `/common/schemas/models.py`
-**Models**:
-- `ClusterState`
-- `DecisionRequest`
-- `DecisionResponse`
-- `OptimizationTask`
-- `MetricsData`
-- `SpotEvent`
-
-### 3. Configuration Schema
-**Format**: YAML
-**Common Config** (`config/common.yaml`):
-```yaml
-environment: production
-logging:
-  level: INFO
-  format: json
-database:
-  host: postgres.internal
-  port: 5432
-redis:
-  host: redis.internal
-  port: 6379
-ml_server:
-  url: http://ml-server:8001
-  timeout: 30
-```
-
-### 4. Event Schema (Message Queue)
-**Events Published by Central Server**:
-- `optimization.started`
-- `optimization.completed`
-- `spot.interruption.detected`
-- `cluster.state.changed`
-
-**Events Consumed**:
-- `client.metrics.updated` (from Client Agent)
-- `ml.prediction.ready` (from ML Server)
-
----
-
-## 🔄 Session Updates Log
-
-### 2025-11-28 - Initial Setup
-**Changes Made**:
-- Created central-server folder structure
-- Documented database schema
-- Defined integration points with ML Server and Client Agents
-- Specified Admin Frontend features
-- Documented core workflows (Spot handling, optimization, gap filling)
-- Listed common components and shared schemas
-
-**Next Steps**:
-1. Create database models and migrations
-2. Implement FastAPI server with all endpoints
-3. Create AWS client service (SQS polling, EC2 API)
-4. Create Kubernetes client service
-5. Build admin frontend with React
-6. Implement real-time cost monitoring dashboard
-7. Create model upload and gap filler UI
 
 ---
 
 ## 📝 API Specifications
 
-### Customer Management
+### Customer & Cluster Management
 ```http
-POST /api/v1/customers
-{
-  "company_name": "Acme Corp",
-  "email": "admin@acme.com",
-  "aws_role_arn": "arn:aws:iam::xxx:role/CloudOptim",
-  "sqs_queue_url": "https://sqs.us-east-1.amazonaws.com/xxx/cloudoptim-events"
-}
+GET  /api/v1/admin/clusters         - List all clusters
+POST /api/v1/admin/clusters         - Register new cluster
+GET  /api/v1/admin/clusters/{id}    - Get cluster details
+PUT  /api/v1/admin/clusters/{id}    - Update cluster config
+DELETE /api/v1/admin/clusters/{id}  - Remove cluster
+GET  /api/v1/admin/savings          - Get real-time savings
 ```
 
-### Trigger Optimization
+### Optimization Endpoints
 ```http
-POST /api/v1/optimization/run
-{
-  "cluster_id": "cluster-123",
-  "optimization_type": "spot_optimize",
-  "dry_run": false
-}
-
-Response:
-{
-  "optimization_id": "opt-456",
-  "status": "in_progress",
-  "estimated_savings": 1250.50
-}
+POST /api/v1/optimization/trigger   - Trigger optimization for cluster
+GET  /api/v1/optimization/history   - Get optimization history
+GET  /api/v1/optimization/status/{id} - Get optimization status
 ```
 
-### Client Agent Task Polling
+### EventBridge Integration
 ```http
-GET /api/v1/client/tasks?cluster_id=cluster-123
+GET  /api/v1/events/spot-warnings   - Get recent Spot warnings
+POST /api/v1/events/process         - Manually process Spot event
+GET  /api/v1/events/history         - Get event processing history
+```
 
-Response:
-{
-  "tasks": [
-    {
-      "task_id": "task-789",
-      "task_type": "drain_node",
-      "parameters": {
-        "node_name": "ip-10-0-1-23.ec2.internal"
-      },
-      "priority": 1,
-      "deadline": "2025-11-28T10:05:00Z"
-    }
-  ]
-}
+### Remote Kubernetes Operations (Agentless)
+```http
+GET  /api/v1/k8s/{cluster_id}/nodes         - List cluster nodes
+GET  /api/v1/k8s/{cluster_id}/pods          - List cluster pods
+GET  /api/v1/k8s/{cluster_id}/metrics       - Get cluster metrics
+POST /api/v1/k8s/{cluster_id}/nodes/drain   - Drain node remotely
+POST /api/v1/k8s/{cluster_id}/nodes/cordon  - Cordon node remotely
+POST /api/v1/k8s/{cluster_id}/scale         - Scale deployment
+```
+
+### Ghost Probe Scanner
+```http
+POST /api/v1/scanner/scan           - Scan for ghost instances
+GET  /api/v1/scanner/ghosts         - List detected ghost instances
+POST /api/v1/scanner/terminate/{id} - Terminate ghost instance
+```
+
+---
+
+## 🔄 Key Workflows (Agentless)
+
+### Workflow 1: Spot Interruption Handling
+```
+1. AWS EventBridge detects Spot interruption (2-minute warning)
+2. EventBridge sends event to customer SQS queue
+3. Core Platform polls SQS queue (every 5 seconds)
+4. Core Platform receives interruption warning
+5. Core Platform calls remote K8s API to drain node
+6. Core Platform launches replacement instance via EC2 API
+7. New node joins cluster (kubelet self-registers)
+8. Workloads rescheduled to new node
+9. Core Platform terminates old instance after drain completes
+```
+
+### Workflow 2: Spot Optimization
+```
+1. Core Platform polls cluster metrics via remote K8s API
+2. Core Platform sends cluster state to ML Server
+3. ML Server analyzes and returns Spot recommendations
+4. Core Platform validates recommendations
+5. Core Platform launches new Spot instances via EC2 API
+6. Core Platform drains old instances via remote K8s API
+7. Core Platform monitors migration progress
+8. Core Platform updates database with savings
+```
+
+### Workflow 3: Bin Packing
+```
+1. Core Platform fetches pod scheduling data via remote K8s API
+2. Core Platform sends data to ML Server
+3. ML Server returns consolidation plan
+4. Core Platform cordons underutilized nodes via remote K8s API
+5. Core Platform drains cordoned nodes via remote K8s API
+6. Pods reschedule to remaining nodes
+7. Core Platform terminates empty nodes via EC2 API
+8. Cluster now consolidated with fewer nodes
+```
+
+### Workflow 4: Ghost Probe Scanner
+```
+1. Core Platform scans customer AWS account (DescribeInstances)
+2. Core Platform fetches K8s nodes via remote K8s API
+3. Core Platform compares EC2 instances vs K8s nodes
+4. Identifies ghost instances (EC2 running but not in K8s)
+5. Flags ghost instances in database
+6. After 24-hour grace period, terminates ghost instances
+7. Notifies customer via webhook
+```
+
+---
+
+## 🧪 Testing
+
+### Unit Tests
+```bash
+pytest tests/test_api.py
+pytest tests/test_services.py
+pytest tests/test_k8s_client.py
+pytest tests/test_eventbridge.py
+```
+
+### Integration Tests
+```bash
+pytest tests/integration/test_spot_handling.py
+pytest tests/integration/test_k8s_remote_api.py
+pytest tests/integration/test_ml_integration.py
 ```
 
 ---
 
 ## 🐛 Troubleshooting
 
-### SQS Messages Not Received
-**Symptom**: Spot events not detected
-**Solution**: Check IAM role permissions, SQS queue URL
+### Remote K8s API Connection Fails
+**Symptom**: "Unable to connect to Kubernetes API"
+**Solution**: Check service account token, verify RBAC permissions, check network access
 
-### ML Server Timeout
-**Symptom**: Optimization requests fail
-**Solution**: Check ML_SERVER_URL, increase timeout, verify ML Server is running
+### SQS Polling Not Receiving Events
+**Symptom**: Spot warnings not processed
+**Solution**: Verify EventBridge rule, check SQS queue permissions, verify IAM role
 
-### Database Connection Pool Exhausted
-**Symptom**: "Too many connections" error
-**Solution**: Increase DB_POOL_SIZE, check for connection leaks
+### High API Response Latency
+**Symptom**: API response time > 2 seconds
+**Solution**: Enable Redis caching, increase workers, check DB connection pool
 
 ---
 
 ## 📌 Important Notes
 
-1. **Central Control**: This server is the main control plane
-2. **Database Owner**: Owns PostgreSQL schema, provides read-only to ML Server
-3. **Orchestrator**: Coordinates ML Server and Client Agents
-4. **AWS Integration**: Handles all AWS API calls (EC2, SQS)
-5. **Admin UI**: Provides complete visibility and control
-6. **Real-time Updates**: WebSocket for live cost monitoring
+1. **Agentless Architecture**: NO DaemonSets or client-side agents
+2. **Remote K8s API**: All operations via remote HTTPS calls
+3. **EventBridge + SQS**: For Spot interruption warnings
+4. **Public Data First**: Day Zero operation using AWS Spot Advisor
+5. **Service Account Token**: Customer provides, encrypted at rest
 
 ---
 
 ## 🎯 Integration Checklist
 
-- [ ] Database schema created and migrated
-- [ ] ML Server connection configured and tested
-- [ ] AWS IAM role configured
-- [ ] SQS queue polling working
-- [ ] Kubernetes API client tested
+- [ ] PostgreSQL database setup
+- [ ] ML Server API endpoint configured
+- [ ] Remote Kubernetes API client tested
+- [ ] EventBridge/SQS polling service running
+- [ ] AWS IAM role configured (cross-account)
 - [ ] Admin frontend deployed
-- [ ] Real-time WebSocket working
-- [ ] Model upload functionality tested
-- [ ] Gap filler UI working
-- [ ] Cost monitoring dashboard live
+- [ ] Redis cache connection tested
+- [ ] Health check endpoints responding
+- [ ] Logging forwarding configured
 
 ---
 
-**END OF SESSION MEMORY - CENTRAL SERVER**
-*Append all future changes and updates below this line*
-
----
+**END OF SESSION MEMORY - CORE PLATFORM (AGENTLESS ARCHITECTURE)**

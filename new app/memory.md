@@ -1,339 +1,440 @@
-# CloudOptim – ML Models on Dedicated Server (New Architecture Memory)
+# CloudOptim – Agentless Kubernetes Cost Optimization (CAST AI Competitor)
 
 **Last Updated**: 2025-11-28
-**Status**: Architecture Defined, Implementation Pending User Approval
+**Status**: Architecture Defined - Ready for Implementation
+**Architecture**: Agentless (EventBridge + SQS + Remote Kubernetes API)
 
 ---
 
-## High-Level Goal
+## 🎯 High-Level Goal
 
-- Run **all ML models and decision engines on a dedicated ML server**.
-- This server is **inference and experimentation only**:
-  - ❌ No model training happens on this server.
-  - ✅ We **upload already-trained models** and **plug-in decision engines** via the ML frontend.
-- Fix the classic gap issue:
-  *"Model trained till October, but I need predictions from October → today."*
-  This gap is filled automatically using **historic market data on the same server**.
-
----
-
-## ML Server Responsibilities
-
-### 1. Model Hosting (Inference Only)
-
-- The ML server hosts:
-  - Serialized ML models (e.g., `model.pkl` files).
-  - Pluggable decision engine modules (rules-based, ML-based, or hybrid).
-- Models and decision engines are **uploaded through the ML frontend**:
-  - Use the **existing frontend design and layout** (same look & feel as the current app).
-  - Only the backend endpoints and wiring change.
-
-### 2. No Training on This Server
-
-- This environment **does not train or retrain models**.
-- All training happens offline / elsewhere (e.g., separate training pipelines, notebooks, or dedicated training infrastructure).
-- Once trained, models are exported and uploaded here for:
-  - A/B testing of different model versions.
-  - Experimenting with new decision engines.
-  - Running production-grade inference.
+Build a **CAST AI competitor** that:
+- ❌ **NO AGENTS** - No DaemonSets, no client-side components
+- ✅ **Remote Kubernetes API** - Direct API calls to customer clusters
+- ✅ **AWS EventBridge + SQS** - For Spot interruption warnings (2-minute notices)
+- ✅ **Public Spot Advisor Data** - No customer data needed for Day Zero
+- ✅ **Inference-Only ML Server** - Upload pre-trained models, no training on production
 
 ---
 
-## Gap-Filling: October → "Now" Problem
+## 🏗️ Two-Server Architecture
 
-### Problem
-
-- Old behavior:
-  Model is trained on data **up to October**, but the instance needs predictions that use data from **October → current date**.
-- Previously, this required:
-  - Extra data-engineering work.
-  - Manual metric pulling or waiting for live data to accumulate.
-
-### New Solution (On the ML Server)
-
-- The dedicated ML server:
-  1. **Knows the model's `trained_until` date** (stored in model metadata).
-  2. On startup or when requested via the ML frontend, the server:
-     - Detects the **gap between `trained_until` and "today"**.
-     - **Directly pulls historic market data** (e.g., Spot/on-demand prices, metrics) **on the same server** for all required:
-       - Instance types
-       - Regions
-  3. The gap is filled with:
-     - Required historic prices / metrics.
-     - Any necessary feature engineering applied locally.
-  4. Once gap-filling completes:
-     - The model immediately starts producing **up-to-date predictions**.
-     - No waiting for weeks of new data collection.
-
-> **Result**: As soon as the instance starts or is refreshed, we can get "today-ready" predictions using the uploaded model + auto gap-filling with historic prices.
-
----
-
-## Live Predictions & Decision Streaming
-
-### 1. Live Predictions
-
-- After the gap is filled, the ML server:
-  - Continuously runs inference using:
-    - Fresh incoming data
-    - Up-to-date historic context (already filled)
-  - Stores predictions in a local store (DB / cache) optimized for:
-    - Time series plots
-    - Quick lookups per instance/region/workload
-
-### 2. Live Decisions (Decision Engine)
-
-- The **decision engine** is pluggable and uploaded just like models:
-  - Fixed **input format** (normalized metrics, prices, states).
-  - Fixed **output format** (actions, scores, explanations).
-- The ML server:
-  - Feeds model predictions into the decision engine.
-  - Produces **live, actionable decisions** (e.g., "move to Spot in region X", "consolidate nodes", "rightsizing recommendations").
-  - Exposes these decisions via APIs consumed by:
-    - The central backend
-    - Dashboards
-    - Orchestration components.
-
-### 3. Frontend Behavior (Using Current Design)
-
-- We **keep the current frontend design** (layout, styling, UX).
-- The updated ML frontend now supports:
-  - **Model upload UI** (same design system, new functionality).
-  - **Decision engine upload / selection** (e.g., dropdown to choose engine version).
-  - **Gap-fill trigger & status display** (e.g., "Fill missing data from 2025-10-01 to today").
-  - **Live charts**:
-    - Predictions vs actuals, per instance / region.
-    - Live decision stream visualized as:
-      - Timelines, markers, or event overlays on graphs.
-- All graphs update in near real time using the same visual style as the original app.
+```
+┌────────────────────────────────────────────────────────────────┐
+│                  Customer AWS Account                          │
+│                                                                 │
+│  ┌──────────────────┐        ┌────────────────────┐          │
+│  │   EKS Cluster    │        │  EventBridge Rule  │          │
+│  │                  │        │  + SQS Queue       │          │
+│  │  (No agent!)     │        │                    │          │
+│  │                  │        │  Spot interruption │          │
+│  │  Workloads       │        │  warnings          │          │
+│  └──────────────────┘        └────────┬───────────┘          │
+│         ▲                              │                      │
+│         │ K8s API (remote)             │ SQS polling         │
+│         │                              │                      │
+└─────────┼──────────────────────────────┼──────────────────────┘
+          │                              │
+          │                              │
+    ┌─────┴──────────────────────────────┴─────┐
+    │                                           │
+    │  CloudOptim Control Plane                │
+    │                                           │
+    │  ┌─────────────────────────────────────┐ │
+    │  │     Core Platform                   │ │
+    │  │  • Central Backend (FastAPI)        │ │
+    │  │  • PostgreSQL Database              │ │
+    │  │  • Admin Frontend (React)           │ │
+    │  │  • EventBridge/SQS Polling          │ │
+    │  │  • Remote K8s API Client            │ │
+    │  │  • AWS EC2 API Client               │ │
+    │  └──────────────┬──────────────────────┘ │
+    │                 │ REST API                │
+    │  ┌──────────────┴──────────────────────┐ │
+    │  │     ML Server                       │ │
+    │  │  • Model Hosting (inference-only)  │ │
+    │  │  • Decision Engines (pluggable)    │ │
+    │  │  • Data Gap Filler                 │ │
+    │  │  • Spot Advisor Data Cache         │ │
+    │  └─────────────────────────────────────┘ │
+    │                                           │
+    └───────────────────────────────────────────┘
+```
 
 ---
 
-## Repository & Folder Layout
+## 🚀 Key Features (CAST AI Parity)
 
-To separate legacy and new architecture cleanly:
+### 1. Spot Instance Arbitrage with Fallback
+**How It Works**:
+- Uses **AWS Spot Advisor** public data (no customer data needed)
+- Risk scoring formula:
+  ```
+  Risk Score = (0.60 × Public_Rate) +
+               (0.25 × Volatility) +
+               (0.10 × Gap_Score) +
+               (0.05 × Time_Score)
+  ```
+- Automatic fallback to on-demand on interruption
+- Receives 2-minute warnings via **EventBridge → SQS**
 
-### 1. Legacy Code – `old app/`
+**Data Source**: `https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json`
 
-- All existing application files (current codebase) are moved into:
+### 2. Bin Packing (Tetris Engine)
+**How It Works**:
+- Consolidates workloads to minimize node count
+- Rebalances cluster to free up underutilized nodes
+- Terminates empty nodes automatically
+- Defragmentation runs every 10 minutes
 
-  ```text
-  /old app/
-    ├─ <all existing frontend files>
-    ├─ <all existing backend files>
-    ├─ <existing Dockerfiles, configs, scripts>
-    └─ memory.md (old references retained for history)
+**Day Zero**: Works immediately using Kubernetes Metrics API (remote)
+
+### 3. Rightsizing
+**Node-Level**:
+- Replaces oversized nodes with smaller instances
+- Monitors CPU/memory utilization via remote Metrics API
+- Deterministic lookup tables (no ML needed for Day Zero)
+
+**Workload-Level**:
+- Suggests CPU/memory request adjustments for deployments
+- Uses 95th percentile of actual usage over 7 days
+
+### 4. Office Hours Scheduler
+**How It Works**:
+- Auto-scale dev/staging clusters to zero during off-hours
+- Schedule: 9 AM - 6 PM weekdays, scale down after hours
+- Scale back up before business hours
+- Saves ~65% on non-production environments
+
+### 5. Zombie Volume Cleanup
+**How It Works**:
+- Detects EBS volumes not attached to any instance
+- Checks if PVC still exists in Kubernetes
+- Deletes orphaned volumes after 7-day grace period
+- Typical savings: 5-10% of storage costs
+
+### 6. Network Traffic Optimization
+**How It Works**:
+- Analyzes cross-AZ traffic patterns
+- Places pods with affinity rules to minimize cross-AZ traffic
+- Saves on AWS data transfer costs (cross-AZ = $0.01/GB)
+
+### 7. OOMKilled Auto-Remediation
+**How It Works**:
+- Detects pods killed due to out-of-memory
+- Automatically increases memory requests by 20%
+- Redeploys pod with updated resource requests
+- Prevents future OOM crashes
+
+### 8. Ghost Probe Scanner
+**How It Works**:
+- Scans AWS account for running EC2 instances **not in Kubernetes**
+- Identifies "ghost" instances (zombie instances left behind)
+- Flags for manual review or auto-terminates after 24 hours
+- Day Zero compatible: no historical data needed
+
+---
+
+## 🔧 Agentless Architecture Details
+
+### Remote Kubernetes API Access
+**No DaemonSets Needed**:
+- Customer provides kubeconfig (service account token)
+- CloudOptim makes **remote API calls** to K8s API server:
+  ```
+  GET /api/v1/nodes
+  GET /api/v1/pods
+  GET /apis/metrics.k8s.io/v1beta1/nodes
+  POST /api/v1/namespaces/{ns}/pods/{pod}/eviction
+  PATCH /api/v1/nodes/{name}
   ```
 
-- Purpose:
-  - Preserve the original implementation.
-  - Enable quick reference and rollback.
-  - Keep old experiments and designs intact.
-
-### 2. New Architecture – `new app/`
-
-- All new application files and folders for the redesigned system live under:
-
-  ```text
-  /new app/
-    ├─ ml-server/          # dedicated ML + decision server
-    ├─ core-platform/      # central backend, DB, admin frontend
-    ├─ client-agent/       # lightweight client-side agent (future use)
-    ├─ memory.md           # updated architecture and behavior (this file)
-    └─ infra/              # optional: docker-compose, IaC, scripts
-  ```
-
-- The **ml-server**:
-  - Hosts:
-    - Model upload endpoints
-    - Decision engine upload/selection
-    - Gap-filling logic via historic prices
-    - Inference and live decisions
-  - Serves data to:
-    - An ML frontend (which reuses the **current UI design**)
-    - The core platform.
-
-- The **core-platform**:
-  - Central storage for:
-    - Clusters, customers, savings, events, etc.
-  - Runs:
-    - Cost optimization logic
-    - Long-running analyzers
-    - Global dashboards (admin UI).
-
-- The **client-agent**:
-  - Minimal footprint on client side.
-  - Used later for heartbeats / optional local metric collection (still "agentless" for core value).
-
+**RBAC Permissions Required**:
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cloudoptim
+  namespace: kube-system
 ---
-
-## API Endpoints for ML Server
-
-### Model Management
-
-```http
-POST /api/v1/ml/models/upload
-  → Upload trained model file (.pkl, serialized)
-  → Metadata: model_name, version, trained_until_date
-
-GET /api/v1/ml/models/list
-  → List all uploaded models
-  → Returns: [{model_id, name, version, trained_until, uploaded_at}]
-
-POST /api/v1/ml/models/activate
-  → Set active model version
-  → Body: {model_id, version}
-
-DELETE /api/v1/ml/models/{model_id}
-  → Delete a model version
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cloudoptim
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
 ```
 
-### Decision Engine Management
+### AWS EventBridge + SQS Integration
+**Spot Interruption Warnings**:
+1. Customer creates EventBridge rule in their AWS account:
+   ```json
+   {
+     "source": ["aws.ec2"],
+     "detail-type": ["EC2 Spot Instance Interruption Warning"],
+     "detail": {
+       "instance-id": [{"prefix": ""}]
+     }
+   }
+   ```
+2. Rule sends events to SQS queue
+3. CloudOptim polls SQS queue every 5 seconds
+4. Receives 2-minute warning before Spot termination
+5. Drains node and launches replacement immediately
 
-```http
-POST /api/v1/ml/engines/upload
-  → Upload decision engine module (Python file)
-  → Returns: {engine_id, name, version}
-
-GET /api/v1/ml/engines/list
-  → List available decision engines
-  → Returns: [{engine_id, name, version, active}]
-
-POST /api/v1/ml/engines/select
-  → Select active decision engine
-  → Body: {engine_id, config}
-
-GET /api/v1/ml/engines/{engine_id}/metadata
-  → Get decision engine details (input/output schema, description)
+**SQS Message Format**:
+```json
+{
+  "version": "0",
+  "id": "12345",
+  "detail-type": "EC2 Spot Instance Interruption Warning",
+  "source": "aws.ec2",
+  "time": "2025-11-28T10:00:00Z",
+  "detail": {
+    "instance-id": "i-1234567890abcdef0",
+    "instance-action": "terminate"
+  }
+}
 ```
 
-### Gap Filling
+### AWS API Integration (EC2)
+**No Customer Data Needed**:
+- Launch/terminate instances via EC2 API
+- Query Spot prices: `DescribeSpotPriceHistory`
+- Get Spot placement scores: `GetSpotPlacementScores`
+- All done remotely, no agents
 
-```http
-POST /api/v1/ml/gap-filler/analyze
-  → Analyze data gaps for active model
-  → Returns: {
-      trained_until: "2025-10-31",
-      current_date: "2025-11-28",
-      gap_days: 28,
-      required_data_types: ["spot_prices", "on_demand_prices"]
+**IAM Permissions Required**:
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:TerminateInstances",
+        "ec2:DescribeInstances",
+        "ec2:DescribeSpotPriceHistory",
+        "ec2:GetSpotPlacementScores",
+        "ec2:CreateTags"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:GetQueueAttributes"
+      ],
+      "Resource": "arn:aws:sqs:*:*:cloudoptim-*"
     }
-
-POST /api/v1/ml/gap-filler/fill
-  → Trigger automatic gap filling
-  → Pulls historic prices from AWS APIs
-  → Body: {
-      instance_types: ["m5.large", "c5.large"],
-      regions: ["us-east-1", "us-west-2"]
-    }
-  → Returns: {
-      status: "in_progress",
-      task_id: "gap-fill-12345"
-    }
-
-GET /api/v1/ml/gap-filler/status/{task_id}
-  → Check gap-filling progress
-  → Returns: {
-      status: "in_progress|completed|failed",
-      percent_complete: 75,
-      records_filled: 15000,
-      eta_seconds: 30
-    }
-```
-
-### Predictions & Decisions
-
-```http
-POST /api/v1/ml/predict/spot-interruption
-  → Get Spot interruption prediction
-  → Body: {instance_type, region, spot_price, launch_time}
-  → Returns: {interruption_probability, confidence}
-
-POST /api/v1/ml/decision/spot-optimize
-  → Get Spot optimization decision
-  → Body: {cluster_id, requirements, constraints}
-  → Returns: {recommendations, execution_plan, estimated_savings}
-
-GET /api/v1/ml/predictions/live
-  → Stream live predictions (WebSocket)
-
-GET /api/v1/ml/decisions/live
-  → Stream live decisions (WebSocket)
+  ]
+}
 ```
 
 ---
 
-## Frontend Features (ML Frontend)
+## 📁 Repository Structure
 
-### Model Management Page
-- **Upload Model**:
-  - Drag-and-drop or file picker for `.pkl` files
-  - Input fields: model name, version, trained_until date
-  - Upload progress bar
-- **Model List**:
-  - Table showing: name, version, trained_until, status (active/inactive), uploaded_at
-  - Actions: Activate, Delete, Download
-- **Model Details**:
-  - Show model metadata, performance metrics, feature importance
-
-### Decision Engine Page
-- **Upload Engine**:
-  - Upload Python module with decision logic
-  - Specify: engine name, version, description
-- **Engine List**:
-  - Dropdown to select active engine
-  - Show: input/output schema, description
-- **Engine Testing**:
-  - Test engine with sample data
-  - View sample decisions
-
-### Gap Filler Page
-- **Gap Analysis**:
-  - Display: model trained_until date vs current date
-  - Show: gap in days, required data types
-  - Button: "Analyze Gap"
-- **Fill Gap**:
-  - Configure: instance types, regions to fetch
-  - Button: "Fill Gap"
-  - Progress indicator: percent complete, records filled, ETA
-- **Status Log**:
-  - Show gap-filling history and results
-
-### Live Dashboard
-- **Predictions Chart**:
-  - Time series: predictions vs actuals
-  - Filter by: instance type, region
-  - Color-coded by confidence level
-- **Decisions Stream**:
-  - Live event stream of decisions
-  - Timeline view with markers
-  - Click to expand decision details (explanation, actions)
-- **Model Performance**:
-  - Real-time accuracy metrics
-  - Drift detection alerts
+```
+new app/
+├── memory.md                   # This file
+├── ml-server/                  # ML inference & decision engine server
+│   ├── SESSION_MEMORY.md      # ML server documentation
+│   ├── models/                 # Model hosting (uploaded models)
+│   ├── decision_engine/        # Pluggable decision engines
+│   ├── data/                   # Gap filler & data fetchers
+│   ├── api/                    # FastAPI server
+│   └── ...
+├── core-platform/              # Central backend, DB, admin UI
+│   ├── SESSION_MEMORY.md      # Core platform documentation
+│   ├── api/                    # Main REST API
+│   ├── database/               # PostgreSQL schema & migrations
+│   ├── admin-frontend/         # React admin dashboard
+│   ├── services/               # Business logic
+│   │   ├── eventbridge_poller.py   # SQS poller for Spot warnings
+│   │   ├── k8s_remote_client.py    # Remote K8s API client
+│   │   └── spot_handler.py         # Spot interruption handler
+│   └── ...
+├── common/                     # Shared components
+│   ├── INTEGRATION_GUIDE.md   # Integration documentation
+│   ├── schemas/                # Pydantic models
+│   ├── auth/                   # Authentication
+│   └── config/                 # Common configuration
+└── infra/                      # Infrastructure as Code
+    ├── docker-compose.yml      # Local development
+    ├── kubernetes/             # K8s manifests
+    └── terraform/              # Cloud infrastructure
+```
 
 ---
 
-## Configuration
+## 🔗 API Endpoints
+
+### ML Server (Port 8001)
+```http
+# Model Management
+POST /api/v1/ml/models/upload       - Upload pre-trained model
+GET  /api/v1/ml/models/list         - List models
+POST /api/v1/ml/models/activate     - Activate model version
+
+# Decision Engines
+POST /api/v1/ml/engines/upload      - Upload decision engine
+GET  /api/v1/ml/engines/list        - List engines
+POST /api/v1/ml/engines/select      - Select active engine
+
+# Gap Filling
+POST /api/v1/ml/gap-filler/analyze  - Analyze data gaps
+POST /api/v1/ml/gap-filler/fill     - Fill gaps with AWS data
+
+# Predictions & Decisions
+POST /api/v1/ml/predict/spot-interruption  - Predict interruption
+POST /api/v1/ml/decision/spot-optimize     - Spot optimization
+POST /api/v1/ml/decision/bin-pack          - Bin packing
+POST /api/v1/ml/decision/rightsize         - Rightsizing
+```
+
+### Core Platform (Port 8000)
+```http
+# Customer & Cluster Management
+GET  /api/v1/admin/clusters         - List clusters
+POST /api/v1/admin/clusters         - Register new cluster
+GET  /api/v1/admin/savings          - Real-time savings
+
+# Optimization
+POST /api/v1/optimization/trigger   - Trigger optimization
+GET  /api/v1/optimization/history   - Optimization history
+
+# EventBridge Integration
+GET  /api/v1/events/spot-warnings   - Recent Spot warnings
+POST /api/v1/events/process         - Process Spot event manually
+
+# Remote Kubernetes Operations
+GET  /api/v1/k8s/{cluster_id}/nodes         - Get cluster nodes
+POST /api/v1/k8s/{cluster_id}/nodes/drain   - Drain node
+POST /api/v1/k8s/{cluster_id}/nodes/cordon  - Cordon node
+```
+
+---
+
+## 📊 Day Zero Operation (No Customer Data)
+
+CloudOptim works **immediately** without historical data:
+
+### 1. Spot Advisor Data (Public)
+- Download from AWS: `spot-advisor-data.json`
+- Contains interruption rates for all instance types
+- Updated by AWS, publicly available
+- **No customer data needed**
+
+### 2. Ghost Probe Scanner
+- Scans customer AWS account for EC2 instances
+- Cross-references with Kubernetes nodes
+- Identifies zombie instances immediately
+- **No historical data needed**
+
+### 3. Rightsizing (Deterministic)
+- Uses lookup tables for common workload patterns
+- Reads current metrics from Kubernetes Metrics API
+- Makes recommendations based on current state
+- **No historical data needed**
+
+### 4. Bin Packing
+- Uses current pod scheduling data from K8s API
+- Simulates rebalancing scenarios
+- Finds optimal consolidation immediately
+- **No historical data needed**
+
+---
+
+## 🔄 Inference-Only ML Server
+
+### Model Upload Flow
+1. User uploads pre-trained model (`.pkl` file) via admin UI
+2. ML server stores model in `/models/uploaded/{model_id}.pkl`
+3. Extracts metadata (trained_until date)
+4. User triggers gap-fill if needed
+5. ML server activates model for predictions
+
+### Gap-Filling Process
+**Problem**: Model trained on October data, need predictions for November
+**Solution**:
+1. ML server detects gap (trained_until → today)
+2. Automatically fetches historic Spot prices from AWS API
+3. Fills feature engineering pipeline with historic data
+4. Model ready for up-to-date predictions immediately
+
+### Decision Engine (Pluggable)
+- Upload Python modules via frontend
+- Fixed input format (metrics, prices, states)
+- Fixed output format (actions, scores, explanations)
+- Hot-swap engines without downtime
+- A/B test different decision strategies
+
+---
+
+## 📝 Configuration
+
+### Core Platform Environment Variables
+```bash
+# Server
+CENTRAL_SERVER_HOST=0.0.0.0
+CENTRAL_SERVER_PORT=8000
+
+# Database
+DB_HOST=postgres.internal
+DB_PORT=5432
+DB_NAME=cloudoptim
+DB_USER=cloudoptim
+DB_PASSWORD=xxx
+
+# Redis
+REDIS_HOST=redis.internal
+REDIS_PORT=6379
+
+# ML Server
+ML_SERVER_URL=http://ml-server:8001
+ML_SERVER_API_KEY=xxx
+
+# AWS
+AWS_REGION=us-east-1
+
+# EventBridge/SQS Polling
+SQS_POLL_INTERVAL_SECONDS=5
+SQS_MAX_MESSAGES=10
+SQS_VISIBILITY_TIMEOUT=30
+
+# Kubernetes Remote API
+K8S_API_TIMEOUT_SECONDS=30
+K8S_API_RETRY_ATTEMPTS=3
+```
 
 ### ML Server Environment Variables
-
 ```bash
 # Server
 ML_SERVER_HOST=0.0.0.0
 ML_SERVER_PORT=8001
-ML_SERVER_WORKERS=4
 
 # Models
 MODEL_UPLOAD_DIR=/app/models/uploaded
-MODEL_ACTIVE_VERSION=v1
 ALLOW_MODEL_TRAINING=false  # Explicitly disabled
 
 # Gap Filler
 GAP_FILLER_ENABLED=true
 GAP_FILLER_AWS_REGION=us-east-1
-GAP_FILLER_INSTANCE_TYPES=m5.large,m5.xlarge,c5.large
-GAP_FILLER_REGIONS=us-east-1,us-west-2,eu-west-1
 GAP_FILLER_HISTORIC_DAYS_MAX=90
 
 # Decision Engines
@@ -341,7 +442,6 @@ DECISION_ENGINE_DIR=/app/engines
 DECISION_ENGINE_ACTIVE=spot_optimizer_v1
 
 # Storage
-LOCAL_PREDICTION_STORE=redis
 REDIS_HOST=redis.internal
 REDIS_PORT=6379
 
@@ -352,40 +452,68 @@ CENTRAL_PLATFORM_API_KEY=xxx
 
 ---
 
-## Summary
+## 🎯 Implementation Roadmap
 
-- **Dedicated ML server**: inference + decision experimentation, not training.
-- **Upload-only models & decision engines** through the **existing frontend design**.
-- **Automatic gap-filling** using **historic prices on the same server**, eliminating the "trained until October but need November data" issue.
-- **Live graphs and live decisions** are plotted on the frontend using the current UI style.
-- Repo is logically split into:
-  - `old app/` – legacy implementation.
-  - `new app/` – new dedicated ML + core platform architecture.
+### Phase 1: Core Infrastructure
+- [ ] Setup PostgreSQL database schema
+- [ ] Create FastAPI server for core platform
+- [ ] Implement remote Kubernetes API client
+- [ ] Setup EventBridge/SQS polling service
+
+### Phase 2: ML Server
+- [ ] Create ML server with FastAPI
+- [ ] Implement model upload endpoints
+- [ ] Create data gap filler with AWS integration
+- [ ] Implement decision engine registry
+
+### Phase 3: Features
+- [ ] Spot arbitrage with risk scoring
+- [ ] Bin packing engine
+- [ ] Rightsizing engine
+- [ ] Office hours scheduler
+- [ ] Zombie volume cleanup
+- [ ] Network optimization
+- [ ] OOMKilled remediation
+- [ ] Ghost probe scanner
+
+### Phase 4: Admin Frontend
+- [ ] Create React admin dashboard
+- [ ] Model upload UI
+- [ ] Live cost monitoring
+- [ ] Prediction vs actual charts
+- [ ] Cluster management UI
+- [ ] Optimization history
+
+### Phase 5: Testing & Production
+- [ ] Integration testing
+- [ ] Load testing
+- [ ] Security audit
+- [ ] Production deployment
+- [ ] Documentation
 
 ---
 
-## Implementation Status
+## 🔐 Security Considerations
 
-**Phase 1** (Current): ✅ Complete
-- Architecture defined
-- Documentation updated
-- API specifications written
-- Frontend features specified
+### Customer Onboarding
+1. Customer creates IAM role with CloudOptim trust policy
+2. Customer creates EventBridge rule + SQS queue
+3. Customer creates Kubernetes service account + RBAC
+4. Customer provides:
+   - AWS IAM Role ARN
+   - SQS Queue URL
+   - Kubernetes API endpoint
+   - Kubernetes service account token
 
-**Phase 2** (Next): ⏳ Pending User Approval
-- Folder reorganization (`old app/` + `new app/`)
-- ML server implementation
-- Model upload endpoints
-- Gap-filler with AWS integration
-- ML frontend (reuse current design)
-- Decision engine upload capability
-
-**Phase 3** (Future):
-- Testing & validation
-- Production deployment
-- Performance optimization
+### Data Security
+- All communication over HTTPS/TLS
+- No customer data leaves their account
+- CloudOptim only makes API calls, doesn't store workload data
+- Service account tokens encrypted at rest
+- IAM roles follow least-privilege principle
 
 ---
 
 **Last Updated**: 2025-11-28
-**Waiting for**: User approval to begin Phase 2 implementation
+**Status**: Ready for implementation
+**Architecture**: Agentless (No DaemonSets, remote API only)

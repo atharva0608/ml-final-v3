@@ -1,223 +1,481 @@
-# CloudOptim - Legacy Architecture (Archived)
+# CloudOptim: Intelligent Kubernetes Cost Optimization Platform
 
-**Version**: 1.0
-**Created**: Before 2025-11-28
-**Status**: **ARCHIVED** - Preserved for reference
-
----
-
-## ⚠️ Important Notice
-
-This folder contains the **legacy/original architecture** of CloudOptim.
-
-**This code is ARCHIVED and should NOT be used for new development.**
-
-For the current architecture, see: **[../new app/](../new%20app/)**
+**Version**: 1.0.0
+**Created**: 2025-11-28
+**Architecture**: Multi-Server Microservices
 
 ---
 
-## 📋 Purpose
+## 🎯 Project Overview
 
-This folder preserves the original implementation for:
-- **Historical reference**
-- **Quick rollback** if needed
-- **Comparison** with new architecture
-- **Learning** from past experiments
+CloudOptim is an agentless, AI-powered Kubernetes cost optimization platform that reduces cloud infrastructure costs by 60-80% while maintaining application reliability. The platform operates as an external control plane with three main components running on separate instances.
+
+### Key Features
+- **Spot Instance Optimization**: Intelligent Spot instance selection with <5% interruption risk
+- **Bin Packing**: Automated workload consolidation to minimize node count
+- **Rightsizing**: Match instance sizes to actual workload requirements
+- **Office Hours Scheduling**: Auto-scale dev/staging environments
+- **Real-time Cost Monitoring**: Live dashboard showing predictions vs actual costs
+- **Data Gap Filling**: Handle scenario where model is trained on old data but needs recent data
+
+### Competitive Advantages
+- ✅ **No "Cold Start"**: Uses public AWS data for immediate value (Day 1)
+- ✅ **Agentless**: Minimal footprint on customer clusters
+- ✅ **Public Data Foundation**: Not dependent on months of customer data collection
+- ✅ **Pluggable Architecture**: Easy to extend with new optimization engines
 
 ---
 
-## 🗂️ Contents
+## 🏗️ Architecture
+
+### Three-Component Architecture
 
 ```
-old app/
-├── README.md                                    # This file
-├── BACKEND_PRODUCTION_READINESS_ANALYSIS.md    # Legacy analysis
-├── SESSION_SUMMARY.md                           # Legacy session notes
-├── old-version/                                 # Original version
-│   ├── agent/                                   # Original agent code
-│   └── central-server/                          # Original central server
-├── new-version/                                 # Intermediate version
-├── central-backend/                             # Legacy backend
-├── client-agent/                                # Legacy client agent
-├── ml-component/                                # Legacy ML code
-├── deployment-scripts/                          # Legacy deployment
-├── docs/                                        # Legacy documentation
-└── central-server-report/                       # Legacy reports
+┌──────────────────┐     ┌──────────────────┐     ┌──────────────────┐
+│   ML Server      │     │ Central Server   │     │  Client Agent    │
+│  (Instance 1)    │◄───►│  (Instance 2)    │◄───►│ (Customer K8s)   │
+│                  │     │                  │     │                  │
+│ • ML Models      │     │ • REST API       │     │ • Task Executor  │
+│ • Decision       │     │ • PostgreSQL     │     │ • Metrics        │
+│   Engines        │     │ • Admin UI       │     │   Collector      │
+│ • Data Fetcher   │     │ • Orchestrator   │     │ • Event Watcher  │
+└──────────────────┘     └──────────────────┘     └──────────────────┘
 ```
 
 ---
 
-## 🔄 What Changed?
-
-### Old Architecture Issues
-1. **ML training on production server** (resource intensive)
-2. **No model upload capability** (hard to experiment)
-3. **Data gap problem** (required manual data engineering)
-4. **Tightly coupled components**
-5. **Complex deployment**
-
-### New Architecture Solutions
-1. ✅ **Inference-only ML server** (lightweight)
-2. ✅ **Model upload via frontend** (easy experimentation)
-3. ✅ **Automatic gap-filling** (no manual work)
-4. ✅ **Microservices architecture** (loosely coupled)
-5. ✅ **Simplified deployment** (Docker + K8s)
-
----
-
-## 📖 Legacy Documentation
-
-### Old Documentation Files
-- **[BACKEND_PRODUCTION_READINESS_ANALYSIS.md](./BACKEND_PRODUCTION_READINESS_ANALYSIS.md)**
-  - Analysis of old backend production readiness
-
-- **[SESSION_SUMMARY.md](./SESSION_SUMMARY.md)**
-  - Summary of work done in old architecture
-
-### Old Code Structure
-
-#### old-version/
-Original implementation with:
-- Agent-based architecture
-- Central server with training
-- Monolithic design
-
-#### new-version/
-Intermediate iteration (before final rewrite)
-
-#### central-backend/
-Legacy central server code
-
-#### ml-component/
-Early ML component implementation
-- Some code was migrated to new architecture
-- Decision engine base classes preserved
-
----
-
-## 🚫 Do NOT Use This Code
-
-**WARNING**: This code is archived and should NOT be used for:
-- ❌ New features
-- ❌ Bug fixes
-- ❌ Production deployments
-- ❌ Active development
-
-**USE**: The new architecture in [../new app/](../new%20app/)
-
----
-
-## 🔍 Referencing Old Code
-
-If you need to reference something from the old architecture:
-
-1. **Check if it's already in new architecture**
-   - Look in `../new app/` first
-
-2. **Understand the context**
-   - Read legacy docs to understand why it was done that way
-
-3. **Don't copy-paste blindly**
-   - New architecture has different patterns
-   - Adapt concepts, don't copy code directly
-
-4. **Update session memory**
-   - If you migrate something, document it in the new session memory
-
----
-
-## 📊 Legacy Architecture Diagram
+## 📁 Project Structure
 
 ```
-Old Architecture (Monolithic):
-
-┌─────────────────────────────────────────────┐
-│         Central Server                      │
-│                                             │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐ │
-│  │   API    │  │   ML     │  │ Training │ │
-│  │          │  │ Models   │  │  Engine  │ │
-│  └──────────┘  └──────────┘  └──────────┘ │
-│                                             │
-│  ┌──────────────────────────────────────┐  │
-│  │         PostgreSQL                    │  │
-│  └──────────────────────────────────────┘  │
-└─────────────────────────────────────────────┘
-         │
-         │ HTTPS
-         ▼
-┌─────────────────────────────────────────────┐
-│         Client Clusters                     │
-│  (Multiple agents, heavy deployment)        │
-└─────────────────────────────────────────────┘
+ml-final-v3/
+├── README.md                          # This file
+├── common/                            # Shared components across all servers
+│   ├── INTEGRATION_GUIDE.md          # ⭐ Integration documentation
+│   ├── schemas/                       # Shared Pydantic models
+│   ├── auth/                          # Authentication middleware
+│   └── config/                        # Common configuration
+│
+├── ml-server/                         # Machine Learning & Decision Engine
+│   ├── SESSION_MEMORY.md             # ⭐ ML Server session documentation
+│   ├── models/                        # ML models
+│   ├── decision_engine/               # Pluggable decision engines
+│   ├── data/                          # Data fetching and gap filling
+│   ├── api/                           # FastAPI server
+│   └── scripts/                       # Installation scripts
+│
+├── central-server/                    # Backend, Database, Admin Frontend
+│   ├── SESSION_MEMORY.md             # ⭐ Central Server session documentation
+│   ├── api/                           # FastAPI application
+│   ├── database/                      # PostgreSQL schema & migrations
+│   ├── admin-frontend/                # React admin dashboard
+│   ├── services/                      # Business logic services
+│   └── scripts/                       # Deployment scripts
+│
+└── client-server/                     # Client-Side Agent
+    ├── SESSION_MEMORY.md             # ⭐ Client Server session documentation
+    ├── agent/                         # Agent implementation
+    ├── tasks/                         # Task executors
+    ├── deployment.yaml                # Kubernetes deployment
+    └── scripts/                       # Installation scripts
 ```
 
-Problems:
-- ML training competed with API serving
-- Single point of failure
-- Heavy client agents
-- Data gap issues
+---
+
+## 📖 Documentation Guide
+
+### Session Memory Documents
+Each server component has a detailed `SESSION_MEMORY.md` file that contains:
+- Component overview and responsibilities
+- Integration points with other servers
+- Directory structure
+- Technology stack
+- Deployment configuration
+- Session updates log (append new changes here)
+
+**⭐ READ THESE FIRST**:
+1. [`ml-server/SESSION_MEMORY.md`](./ml-server/SESSION_MEMORY.md)
+2. [`central-server/SESSION_MEMORY.md`](./central-server/SESSION_MEMORY.md)
+3. [`client-server/SESSION_MEMORY.md`](./client-server/SESSION_MEMORY.md)
+4. [`common/INTEGRATION_GUIDE.md`](./common/INTEGRATION_GUIDE.md)
+
+### Working on Individual Components
+
+When working on a specific component:
+1. Read its `SESSION_MEMORY.md` file first
+2. Make your changes
+3. **Append updates** to the "Session Updates Log" section
+4. Update integration points if APIs change
+5. Keep common schemas synchronized
 
 ---
 
-## 🔄 Migration Notes
+## 🚀 Quick Start
 
-### Key Concepts Preserved
-- ✅ Decision engine architecture (migrated to new)
-- ✅ Spot risk scoring algorithm (improved)
-- ✅ Database schema (refined)
+### Prerequisites
+- Python 3.10+
+- Docker & Docker Compose
+- PostgreSQL 15+
+- Redis 7+
+- AWS Account (for production)
+- Kubernetes cluster (for Client Agent)
 
-### Key Concepts Changed
-- ❌ Training on server → Upload pre-trained models
-- ❌ Complex agent → Lightweight agent
-- ❌ Monolithic → Microservices
-- ❌ Manual gap filling → Automatic gap filling
+### Installation
 
----
+#### 1. ML Server
+```bash
+cd ml-server
+./scripts/install.sh
+./scripts/start_server.sh
+```
+Server will run on: `http://localhost:8001`
 
-## 📝 Historical Context
+#### 2. Central Server
+```bash
+cd central-server
+./scripts/setup_database.sh
+./scripts/start_server.sh
+./scripts/deploy_frontend.sh
+```
+- API: `http://localhost:8000`
+- Admin UI: `http://localhost:3000`
 
-### Why We Rewrote
+#### 3. Client Agent (on Kubernetes)
+```bash
+cd client-server
+./scripts/install.sh
+```
+Agent will deploy to `kube-system` namespace
 
-**Performance Issues**:
-- ML training consumed too many resources
-- Couldn't scale inference independently
-
-**Operational Complexity**:
-- Hard to experiment with new models
-- Required manual data engineering
-- Complex deployment
-
-**Maintenance Burden**:
-- Tightly coupled code
-- Hard to test components independently
-
-### Lessons Learned
-
-1. **Separate concerns**: ML training ≠ ML inference
-2. **Make experimentation easy**: Model upload > hardcoded models
-3. **Automate data pipelines**: Gap-filling should be automatic
-4. **Design for observability**: Clear logging and monitoring
-5. **Document as you go**: Session memory docs are crucial
-
----
-
-## 🗃️ Archival Information
-
-**Archived On**: 2025-11-28
-**Last Active Commit**: [See git log in old folders]
-**Reason for Archive**: Complete rewrite to new architecture
+### Docker Compose (Development)
+```bash
+docker-compose up -d
+```
 
 ---
 
-## 🔗 Resources
+## 🔗 Common Components Integration
 
-- **New Architecture**: [../new app/README.md](../new%20app/README.md)
-- **Migration Guide**: [../NEW_ARCHITECTURE_MEMORY.md](../NEW_ARCHITECTURE_MEMORY.md)
-- **Project Status**: [../PROJECT_STATUS.md](../PROJECT_STATUS.md)
+### Shared Data Schemas
+All servers use common Pydantic models defined in `/common/schemas/`:
+- `ClusterState` - Cluster state representation
+- `DecisionRequest` - ML decision request format
+- `DecisionResponse` - ML decision response format
+- `Task` - Client task definition
+- `TaskResult` - Task execution result
+- `ClusterMetrics` - Metrics data
+
+**⚠️ IMPORTANT**: When updating schemas, update all three servers to maintain compatibility.
+
+### Authentication
+All servers use API key authentication:
+- Header: `Authorization: Bearer {API_KEY}`
+- Implementation: `/common/auth/api_key.py`
+
+### Configuration
+Common configuration in `/common/config/common.yaml`:
+- Database connection
+- Redis connection
+- Logging configuration
+- API settings
 
 ---
 
-**This is archived code. Do not use for active development.**
+## 📊 Key Features Detail
 
-**For all new work, see**: [../new app/](../new%20app/)
+### 1. ML Model & Decision Engine
+
+**Location**: `ml-server/`
+
+**Components**:
+- **Spot Predictor**: XGBoost model predicting Spot interruption probability
+- **Spot Optimizer Engine**: Selects optimal Spot instances using risk scoring
+- **Bin Packing Engine**: Consolidates workloads (TODO)
+- **Rightsizing Engine**: Matches instance sizes to workloads (TODO)
+- **Office Hours Scheduler**: Auto-scales based on schedule (TODO)
+
+**Pluggable Architecture**:
+All engines inherit from `BaseDecisionEngine` with fixed input/output contracts.
+
+### 2. Central Backend & Database
+
+**Location**: `central-server/`
+
+**Components**:
+- **REST API**: FastAPI server handling all orchestration
+- **PostgreSQL Database**: Customer data, clusters, nodes, optimization history
+- **Services**:
+  - Optimizer Service (coordinates ML Server)
+  - Executor Service (executes optimization plans)
+  - Spot Handler (processes Spot interruptions)
+  - K8s Client (remote cluster management)
+  - AWS Client (EC2, SQS integration)
+
+### 3. Admin Frontend
+
+**Location**: `central-server/admin-frontend/`
+
+**Features**:
+- 📊 Real-time cost monitoring dashboard
+- 📈 Prediction vs actual comparison charts
+- 📤 Model upload interface
+- 🔧 Data gap filling tool
+- 📜 Optimization history
+- ⚙️ Cluster configuration
+
+**Tech Stack**: React + TypeScript + Material-UI
+
+### 4. Client-Side Agent
+
+**Location**: `client-server/`
+
+**Deployment**: Runs as Kubernetes Deployment in customer cluster
+
+**Responsibilities**:
+- Poll Central Server for tasks (every 10s)
+- Execute tasks: node draining, labeling, cordoning
+- Collect and send cluster metrics (every 60s)
+- Watch and forward Kubernetes events
+- Report health status (heartbeat every 30s)
+
+**Minimal Footprint**: 100m CPU, 128Mi RAM
+
+---
+
+## 🔄 Workflows
+
+### Spot Optimization Workflow
+```
+1. Admin triggers optimization (or scheduled)
+2. Central Server fetches cluster state
+3. Central Server → ML Server: Decision request
+4. ML Server: Analyze using SpotOptimizerEngine
+5. ML Server → Central Server: Recommendations
+6. Central Server: Validate and execute (launch Spot instances)
+7. Central Server → Client Agent: Send tasks (drain nodes)
+8. Client Agent: Execute tasks on Kubernetes
+9. Central Server: Update database, calculate savings
+10. Admin Dashboard: Display real-time savings
+```
+
+### Spot Interruption Handling
+```
+1. AWS EventBridge → SQS: Interruption warning (2-min notice)
+2. Central Server polls SQS (every 5s)
+3. Central Server: Identify affected node
+4. Central Server → ML Server: Get replacement recommendation
+5. Central Server: Launch On-Demand replacement (guaranteed)
+6. Central Server → Client Agent: Drain dying node
+7. Client Agent: Evict pods gracefully
+8. New node joins cluster, pods reschedule
+9. (Later) Replace On-Demand with Spot when safe
+```
+
+### Data Gap Filling
+```
+1. Admin uploads model trained on old data (e.g., 30 days ago)
+2. Admin opens Gap Filler UI
+3. UI queries required data range (e.g., last 15 days)
+4. Central Server → ML Server: Identify gaps
+5. ML Server: Calculate missing date ranges
+6. ML Server: Query AWS APIs (Spot prices, interruption data)
+7. ML Server: Fill missing data
+8. Central Server: Store filled data in database
+9. UI: Display success, show records filled
+10. Model now has complete recent data for accurate predictions
+```
+
+---
+
+## 🛠️ Technology Stack
+
+### ML Server
+- Python 3.10, FastAPI, XGBoost, scikit-learn
+- boto3 (AWS), kubernetes-client
+- Redis (caching)
+
+### Central Server
+- **Backend**: Python 3.10, FastAPI, SQLAlchemy
+- **Database**: PostgreSQL 15, Redis 7
+- **Frontend**: React 18 + TypeScript
+- **Background Jobs**: Celery
+- **AWS**: boto3, SQS, EventBridge
+
+### Client Agent
+- Python 3.10, asyncio, kubernetes-client
+- Deployed as Kubernetes Deployment
+
+---
+
+## 📈 Performance Targets
+
+- **Cost Reduction**: 60-80%
+- **Spot Interruption Rate**: <5%
+- **API Response Time**: <500ms (p95)
+- **Decision Latency**: <2 seconds
+- **Agent Footprint**: <128Mi RAM, <100m CPU
+
+---
+
+## 🧪 Testing
+
+### Run All Tests
+```bash
+# ML Server
+cd ml-server && pytest tests/
+
+# Central Server
+cd central-server && pytest tests/
+
+# Client Agent
+cd client-server && pytest tests/
+```
+
+### Integration Tests
+```bash
+# Requires all three servers running
+pytest integration_tests/
+```
+
+---
+
+## 🚢 Deployment
+
+### Development
+```bash
+docker-compose up -d
+```
+
+### Production
+
+#### ML Server
+```bash
+cd ml-server
+./scripts/install.sh
+./scripts/start_server.sh
+```
+
+#### Central Server
+```bash
+cd central-server
+./scripts/setup_database.sh
+./scripts/migrate_database.sh
+./scripts/start_server.sh
+./scripts/deploy_frontend.sh
+```
+
+#### Client Agent (per cluster)
+```bash
+kubectl apply -f client-server/deployment.yaml
+```
+
+---
+
+## 📝 Development Workflow
+
+### Adding a New Decision Engine
+
+1. Create engine in `ml-server/decision_engine/`:
+```python
+from decision_engine.base_engine import BaseDecisionEngine
+
+class MyNewEngine(BaseDecisionEngine):
+    def analyze(self, input_data):
+        # Implementation
+        pass
+```
+
+2. Register in `ml-server/api/routes/decisions.py`
+
+3. Update `ml-server/SESSION_MEMORY.md` (Session Updates Log section)
+
+4. Update `common/INTEGRATION_GUIDE.md` if API changes
+
+### Adding a New Task Type
+
+1. Create task executor in `client-server/tasks/`:
+```python
+async def my_new_task(parameters: dict):
+    # Implementation
+    pass
+```
+
+2. Register in `client-server/agent/task_executor.py`
+
+3. Update `client-server/SESSION_MEMORY.md`
+
+4. Update common task schema in `common/schemas/tasks.py`
+
+---
+
+## 🐛 Troubleshooting
+
+### ML Server not responding
+- Check `ML_SERVER_URL` in Central Server config
+- Verify ML Server is running: `curl http://localhost:8001/health`
+- Check logs: `docker logs ml-server`
+
+### Client Agent not executing tasks
+- Check API key in Secret
+- Verify RBAC permissions: `kubectl auth can-i create pods/eviction --as=system:serviceaccount:kube-system:cloudoptim-agent`
+- Check logs: `kubectl logs -n kube-system deployment/cloudoptim-agent`
+
+### Database connection errors
+- Verify PostgreSQL is running
+- Check connection string in config
+- Test connection: `psql -h localhost -U central_server -d cloudoptim`
+
+---
+
+## 📞 Support
+
+- **Documentation**: See individual `SESSION_MEMORY.md` files
+- **Integration Issues**: See `common/INTEGRATION_GUIDE.md`
+- **GitHub Issues**: [Create an issue](https://github.com/cloudoptim/platform/issues)
+
+---
+
+## 🗺️ Roadmap
+
+### Phase 1 (Current)
+- [x] Project structure created
+- [x] Session memory documents
+- [x] Common integration guide
+- [ ] ML Server implementation
+- [ ] Central Server implementation
+- [ ] Client Agent implementation
+
+### Phase 2
+- [ ] Bin Packing Engine
+- [ ] Rightsizing Engine
+- [ ] Office Hours Scheduler
+- [ ] Admin Frontend complete
+
+### Phase 3
+- [ ] Advanced ML models (deep learning)
+- [ ] Multi-cloud support (GCP, Azure)
+- [ ] Custom policies per customer
+- [ ] Advanced analytics
+
+---
+
+## 📄 License
+
+[To be determined]
+
+---
+
+## 🤝 Contributing
+
+When contributing:
+1. Read the relevant `SESSION_MEMORY.md` file
+2. Make changes
+3. Update session memory log
+4. Update integration guide if APIs change
+5. Add tests
+6. Submit PR
+
+---
+
+**⭐ Remember**: Always update the `SESSION_MEMORY.md` file when working on a component!
+
+**Last Updated**: 2025-11-28

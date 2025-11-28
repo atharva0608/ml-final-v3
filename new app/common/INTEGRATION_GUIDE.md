@@ -1,97 +1,119 @@
 # Common Components & Integration Guide
-## CloudOptim - Cross-Server Integration Documentation
+## CloudOptim - Agentless Architecture Integration Documentation
 
 **Created**: 2025-11-28
 **Last Updated**: 2025-11-28
+**Architecture**: Agentless (EventBridge + SQS + Remote Kubernetes API)
 
 ---
 
 ## 📋 Overview
 
-This document defines all common components, data schemas, APIs, and integration patterns shared across the three CloudOptim servers:
-1. **ML Server** - Machine Learning & Decision Engine
-2. **Central Server** - Backend, Database, Admin Frontend
-3. **Client Server** - Client-Side Agent (runs in customer cluster)
+This document defines all common components, data schemas, APIs, and integration patterns for the CloudOptim agentless Kubernetes cost optimization platform.
+
+**Two-Server Architecture**:
+1. **ML Server** - Machine Learning & Decision Engine (inference-only)
+2. **Core Platform** - Backend, Database, Admin Frontend, Remote K8s API client
+
+**No Client-Side Agents**: All cluster operations via remote Kubernetes API
 
 ---
 
 ## 🏗️ System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Customer AWS Account                        │
-│                                                                  │
-│  ┌────────────────┐         ┌──────────────────┐              │
-│  │   EKS Cluster  │         │  EventBridge     │              │
-│  │                │         │  + SQS Queue     │              │
-│  │  ┌──────────┐  │         └────────┬─────────┘              │
-│  │  │ Client   │  │                  │                         │
-│  │  │ Agent    │  │                  │                         │
-│  │  └────┬─────┘  │                  │                         │
-│  │       │        │                  │                         │
-│  └───────┼────────┘                  │                         │
-│          │                           │                         │
-└──────────┼───────────────────────────┼─────────────────────────┘
-           │                           │
-           │ HTTPS                     │ HTTPS
-           │                           │
-┌──────────┼───────────────────────────┼─────────────────────────┐
-│          ▼                           ▼                         │
-│  ┌──────────────────────────────────────────────────┐         │
-│  │          Central Server (Control Plane)          │         │
-│  │                                                   │         │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐      │         │
-│  │  │   API    │  │ Database │  │  Admin   │      │         │
-│  │  │          │  │ (Postgres│  │ Frontend │      │         │
-│  │  └────┬─────┘  │  +Redis) │  └──────────┘      │         │
-│  │       │        └──────────┘                      │         │
-│  └───────┼─────────────────────────────────────────┘         │
-│          │                                                     │
-│          │ REST API                                            │
-│          ▼                                                     │
-│  ┌──────────────────────────────────────────────────┐         │
-│  │              ML Server                            │         │
-│  │                                                   │         │
-│  │  ┌──────────┐  ┌──────────────┐  ┌──────────┐  │         │
-│  │  │  Models  │  │   Decision   │  │   Data   │  │         │
-│  │  │          │  │   Engines    │  │  Fetcher │  │         │
-│  │  └──────────┘  └──────────────┘  └──────────┘  │         │
-│  └──────────────────────────────────────────────────┘         │
-│                                                                │
-└────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────┐
+│                  Customer AWS Account                          │
+│                                                                 │
+│  ┌──────────────────┐        ┌────────────────────┐          │
+│  │   EKS Cluster    │        │  EventBridge Rule  │          │
+│  │                  │        │  + SQS Queue       │          │
+│  │  (No agent!)     │        │                    │          │
+│  │                  │        │  Spot interruption │          │
+│  │  Workloads       │        │  warnings          │          │
+│  └────────▲─────────┘        └────────┬───────────┘          │
+│           │ Remote K8s API            │ SQS polling           │
+│           │ (HTTPS)                   │                       │
+└───────────┼───────────────────────────┼───────────────────────┘
+            │                           │
+            │                           │
+    ┌───────┴───────────────────────────┴───────┐
+    │                                            │
+    │  CloudOptim Control Plane                 │
+    │                                            │
+    │  ┌──────────────────────────────────────┐ │
+    │  │     Core Platform (Port 8000)       │ │
+    │  │  • FastAPI REST API                 │ │
+    │  │  • PostgreSQL Database              │ │
+    │  │  • Admin Frontend (React)           │ │
+    │  │  • EventBridge/SQS Poller           │ │
+    │  │  • Remote K8s API Client            │ │
+    │  │  • AWS EC2 API Client               │ │
+    │  └──────────────┬───────────────────────┘ │
+    │                 │ REST API                 │
+    │  ┌──────────────┴───────────────────────┐ │
+    │  │     ML Server (Port 8001)            │ │
+    │  │  • Model Hosting (inference-only)   │ │
+    │  │  • Decision Engines (pluggable)     │ │
+    │  │  • Data Gap Filler                  │ │
+    │  │  • Spot Advisor Cache (Redis)       │ │
+    │  └──────────────────────────────────────┘ │
+    │                                            │
+    └────────────────────────────────────────────┘
 ```
+
+**Key Points**:
+- ❌ NO DaemonSets in customer clusters
+- ❌ NO client-side agents
+- ✅ Remote Kubernetes API access only
+- ✅ AWS EventBridge + SQS for Spot warnings
+- ✅ AWS EC2 API for instance management
 
 ---
 
-## 🔗 Integration Patterns
+## 🔗 Integration Patterns (Agentless)
 
 ### Pattern 1: Request-Response (Synchronous)
 **Used For**: ML predictions, decision requests
 **Flow**:
 ```
-Central Server → ML Server: POST /api/v1/ml/decision/spot-optimize
+Core Platform → ML Server: POST /api/v1/ml/decision/spot-optimize
 ML Server: Process request, run decision engine
-ML Server → Central Server: JSON response with recommendations
+ML Server → Core Platform: JSON response with recommendations
+Core Platform: Execute via remote K8s API + AWS EC2 API
 ```
 
-### Pattern 2: Polling (Client-Initiated)
-**Used For**: Client Agent task retrieval
+### Pattern 2: Event-Driven (EventBridge + SQS)
+**Used For**: Spot interruption warnings
 **Flow**:
 ```
-Client Agent → Central Server: GET /api/v1/client/tasks (every 10s)
-Central Server: Return pending tasks
-Client Agent: Execute tasks
-Client Agent → Central Server: POST /api/v1/client/tasks/{id}/result
+AWS EC2 → EventBridge: Spot interruption warning (2-min notice)
+EventBridge → Customer SQS Queue: Forward event
+Core Platform → SQS Queue: Poll every 5 seconds
+Core Platform: Receive warning, process event
+Core Platform → Remote K8s API: Drain node
+Core Platform → AWS EC2 API: Launch replacement
 ```
 
-### Pattern 3: Event Stream (Real-Time)
-**Used For**: Live dashboard updates, urgent tasks
+### Pattern 3: Scheduled Polling (Remote K8s API)
+**Used For**: Cluster metrics collection
 **Flow**:
 ```
-Central Server ← AWS EventBridge: Spot interruption event
-Central Server: Process event
-Central Server → Admin Frontend: WebSocket push (cost update)
-Central Server → Client Agent: WebSocket push (urgent task)
+Core Platform → Remote K8s API: GET /api/v1/nodes (every 30s)
+Core Platform → Remote K8s API: GET /apis/metrics.k8s.io/v1beta1/nodes
+Core Platform: Store metrics in PostgreSQL
+Core Platform → ML Server: Send cluster state for optimization
+```
+
+### Pattern 4: On-Demand Remote Operations
+**Used For**: Optimization execution
+**Flow**:
+```
+Core Platform → ML Server: Request optimization decision
+ML Server → Core Platform: Return execution plan
+Core Platform → Remote K8s API: Drain nodes, cordon nodes
+Core Platform → AWS EC2 API: Launch/terminate instances
+Core Platform → Database: Record optimization results
 ```
 
 ---
@@ -107,15 +129,15 @@ common/schemas/
 ├── models.py          # Core data models (Pydantic)
 ├── requests.py        # API request schemas
 ├── responses.py       # API response schemas
-├── tasks.py           # Task definitions
-└── metrics.py         # Metrics schemas
+├── k8s_models.py      # Kubernetes resource schemas
+└── aws_models.py      # AWS event schemas
 ```
 
 ### Core Models
 
 #### 1. ClusterState
 **Purpose**: Represents current state of a Kubernetes cluster
-**Used By**: All servers
+**Used By**: Core Platform → ML Server communication
 **Definition**:
 ```python
 from pydantic import BaseModel
@@ -153,8 +175,8 @@ class ClusterState(BaseModel):
 ```
 
 #### 2. DecisionRequest
-**Purpose**: Request sent from Central Server to ML Server for optimization decisions
-**Flow**: Central → ML
+**Purpose**: Request sent from Core Platform to ML Server for optimization decisions
+**Flow**: Core Platform → ML Server
 **Definition**:
 ```python
 class DecisionRequest(BaseModel):
@@ -178,7 +200,7 @@ class DecisionRequest(BaseModel):
 
 #### 3. DecisionResponse
 **Purpose**: Response from ML Server containing optimization recommendations
-**Flow**: ML → Central
+**Flow**: ML Server → Core Platform
 **Definition**:
 ```python
 class Recommendation(BaseModel):
@@ -215,15 +237,15 @@ class DecisionResponse(BaseModel):
     metadata: dict
 ```
 
-#### 4. Task (for Client Agent)
-**Purpose**: Task sent from Central Server to Client Agent for execution
-**Flow**: Central → Client
+#### 4. RemoteK8sTask
+**Purpose**: Task for remote Kubernetes API operations
+**Flow**: Core Platform → Remote K8s API
 **Definition**:
 ```python
-class Task(BaseModel):
+class RemoteK8sTask(BaseModel):
     task_id: str
     cluster_id: str
-    task_type: str  # drain_node, label_node, cordon_node, etc.
+    task_type: str  # drain_node, cordon_node, scale_deployment
 
     # Task parameters
     parameters: dict  # e.g., {"node_name": "ip-10-0-1-23", "grace_period": 90}
@@ -238,8 +260,8 @@ class Task(BaseModel):
 ```
 
 #### 5. TaskResult
-**Purpose**: Result of task execution sent from Client Agent to Central Server
-**Flow**: Client → Central
+**Purpose**: Result of task execution
+**Flow**: Core Platform internal (after remote K8s API call)
 **Definition**:
 ```python
 class TaskResult(BaseModel):
@@ -259,8 +281,8 @@ class TaskResult(BaseModel):
 ```
 
 #### 6. ClusterMetrics
-**Purpose**: Metrics collected by Client Agent and sent to Central Server
-**Flow**: Client → Central
+**Purpose**: Metrics collected from remote Kubernetes API
+**Flow**: Remote K8s API → Core Platform
 **Definition**:
 ```python
 class NodeMetric(BaseModel):
@@ -297,617 +319,447 @@ class ClusterMetrics(BaseModel):
 ```
 
 #### 7. SpotEvent
-**Purpose**: Spot instance interruption event
-**Flow**: AWS → Central (via SQS)
+**Purpose**: Spot instance interruption event from AWS EventBridge
+**Flow**: AWS EventBridge → SQS → Core Platform
 **Definition**:
 ```python
 class SpotEvent(BaseModel):
     event_id: str
-    event_type: str  # interruption_warning, instance_terminated
-
-    # AWS details
+    cluster_id: str
     instance_id: str
-    region: str
-    availability_zone: str
-
-    # Timing
+    event_type: str  # interruption_warning, terminated
+    event_time: datetime
     received_at: datetime
-    interruption_time: datetime  # When AWS will terminate
 
-    # Cluster mapping
-    cluster_id: Optional[str]
-    node_name: Optional[str]
+    # Event details
+    detail: dict  # Raw AWS event detail
 
     # Action taken
     action_taken: Optional[str]
     replacement_instance_id: Optional[str]
+    drain_duration_seconds: Optional[int]
+    processed_at: Optional[datetime]
+```
+
+#### 8. AWS EC2 Models
+**Purpose**: AWS EC2 instance operations
+**Definition**:
+```python
+class EC2InstanceLaunchRequest(BaseModel):
+    instance_type: str
+    availability_zone: str
+    instance_market: str  # spot, on-demand
+    tags: dict
+    user_data: Optional[str]
+
+class EC2InstanceTerminateRequest(BaseModel):
+    instance_id: str
+    reason: str  # optimization, interruption, manual
+
+class SpotPriceQuery(BaseModel):
+    instance_types: List[str]
+    regions: List[str]
+    start_time: datetime
+    end_time: datetime
 ```
 
 ---
 
-## 🔐 Authentication & Authorization
+## 🔗 API Endpoints
 
-### API Key Authentication
-**Method**: Bearer token in Authorization header
-**Format**: `Authorization: Bearer {API_KEY}`
+### ML Server (Port 8001)
 
-**Implementation**:
-```python
-# common/auth/api_key.py
-from fastapi import HTTPException, Security
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+#### Model Management
+```http
+POST /api/v1/ml/models/upload
+  → Upload pre-trained model
+  → Body: multipart/form-data with .pkl file
+  → Returns: {model_id, name, version, trained_until}
 
-security = HTTPBearer()
+GET /api/v1/ml/models/list
+  → List all uploaded models
+  → Returns: [{model_id, name, version, trained_until, active}]
 
-async def verify_api_key(credentials: HTTPAuthorizationCredentials = Security(security)):
-    api_key = credentials.credentials
-
-    # Validate against database or environment variable
-    if not is_valid_api_key(api_key):
-        raise HTTPException(status_code=401, detail="Invalid API key")
-
-    return api_key
+POST /api/v1/ml/models/activate
+  → Activate model version
+  → Body: {model_id, version}
+  → Returns: {status, activated_at}
 ```
 
-**Usage in APIs**:
-```python
-from fastapi import Depends
-from common.auth import verify_api_key
+#### Decision Engines
+```http
+POST /api/v1/ml/engines/upload
+  → Upload decision engine module
+  → Body: multipart/form-data with .py file
+  → Returns: {engine_id, name, version}
 
-@app.post("/api/v1/ml/decision/spot-optimize")
-async def spot_optimize(
-    request: DecisionRequest,
-    api_key: str = Depends(verify_api_key)
-):
-    # Process request
-    pass
+GET /api/v1/ml/engines/list
+  → List available engines
+  → Returns: [{engine_id, name, version, active}]
+
+POST /api/v1/ml/engines/select
+  → Select active engine
+  → Body: {engine_id, config}
+  → Returns: {status, activated_at}
 ```
 
-### Service-to-Service Authentication
-**ML Server ↔ Central Server**:
-- Central Server has API key for ML Server
-- ML Server validates requests from Central Server
-
-**Client Agent ↔ Central Server**:
-- Client Agent has API key (stored in Kubernetes Secret)
-- Central Server validates requests from Client Agent
-- Each cluster has unique API key
-
----
-
-## 📡 API Endpoints
-
-### Central Server Endpoints
-
-#### For ML Server
-```
-POST /api/v1/ml/proxy/decision
-  → Proxy decision requests to ML Server
-  → Used for testing/debugging
-
-GET /api/v1/ml/health
-  → Check ML Server connectivity
-```
-
-#### For Client Agents
-```
-GET /api/v1/client/tasks?cluster_id={id}
-  → Get pending tasks for a cluster
-  → Returns: List[Task]
-
-POST /api/v1/client/tasks/{task_id}/result
-  → Submit task execution result
-  → Body: TaskResult
-
-POST /api/v1/client/metrics
-  → Submit cluster metrics
-  → Body: ClusterMetrics
-
-POST /api/v1/client/events
-  → Submit cluster events
-  → Body: List[Event]
-
-POST /api/v1/client/heartbeat
-  → Health check heartbeat
-  → Body: {"cluster_id": str, "status": str, "timestamp": datetime}
-
-WS /api/v1/client/stream?cluster_id={id}
-  → WebSocket for real-time task streaming
-```
-
-#### For Admin Frontend
-```
-GET /api/v1/admin/clusters
-  → List all clusters
-
-GET /api/v1/admin/clusters/{id}/state
-  → Get cluster current state
-
-GET /api/v1/admin/savings
-  → Get real-time savings data
-
-POST /api/v1/admin/optimization/trigger
-  → Manually trigger optimization
-
-POST /api/v1/admin/models/upload
-  → Upload new ML model
-
-POST /api/v1/admin/gap-filler/analyze
+#### Gap Filling
+```http
+POST /api/v1/ml/gap-filler/analyze
   → Analyze data gaps
+  → Body: {model_id}
+  → Returns: {trained_until, current_date, gap_days}
 
-POST /api/v1/admin/gap-filler/fill
-  → Fill data gaps
+POST /api/v1/ml/gap-filler/fill
+  → Fill gaps with AWS data
+  → Body: {model_id, instance_types, regions}
+  → Returns: {task_id, status}
 
-WS /api/v1/admin/stream
-  → Real-time updates for dashboard
+GET /api/v1/ml/gap-filler/status/{task_id}
+  → Check gap-filling progress
+  → Returns: {status, percent_complete, eta_seconds}
 ```
 
-### ML Server Endpoints
+#### Predictions & Decisions
+```http
+POST /api/v1/ml/predict/spot-interruption
+  → Predict Spot interruption probability
+  → Body: {instance_type, region, spot_price, launch_time}
+  → Returns: {interruption_probability, confidence}
 
-```
 POST /api/v1/ml/decision/spot-optimize
-  → Get Spot instance recommendations
-  → Body: DecisionRequest
-  → Returns: DecisionResponse
+  → Get Spot optimization recommendations
+  → Body: DecisionRequest (see schema above)
+  → Returns: DecisionResponse (see schema above)
 
 POST /api/v1/ml/decision/bin-pack
-  → Get workload consolidation plan
+  → Get bin packing recommendations
   → Body: DecisionRequest
   → Returns: DecisionResponse
 
 POST /api/v1/ml/decision/rightsize
-  → Get instance rightsizing recommendations
+  → Get rightsizing recommendations
   → Body: DecisionRequest
   → Returns: DecisionResponse
+```
 
-POST /api/v1/ml/decision/schedule
-  → Get office hours scheduling plan
-  → Body: DecisionRequest
-  → Returns: DecisionResponse
+### Core Platform (Port 8000)
 
-POST /api/v1/ml/predict/spot-interruption
-  → Predict Spot interruption probability
-  → Body: {"instance_type": str, "region": str, ...}
-  → Returns: {"probability": float, "confidence": float}
+#### Customer & Cluster Management
+```http
+GET /api/v1/admin/clusters
+  → List all clusters
+  → Returns: [{cluster_id, name, region, status, cost}]
 
-POST /api/v1/ml/data/fill-gaps
-  → Fill training data gaps
-  → Body: {"model_training_date": datetime, "lookback_days": int}
-  → Returns: {"gaps_filled": int, "records": int}
+POST /api/v1/admin/clusters
+  → Register new cluster
+  → Body: {name, k8s_api_endpoint, k8s_token, aws_role_arn, sqs_queue_url}
+  → Returns: {cluster_id, status}
 
-GET /api/v1/ml/health
-  → Health check
-  → Returns: {"status": "healthy", "models_loaded": bool}
+GET /api/v1/admin/clusters/{id}
+  → Get cluster details
+  → Returns: {cluster_id, details, metrics, savings}
+
+GET /api/v1/admin/savings
+  → Get real-time savings
+  → Returns: {total_savings, breakdown_by_cluster}
+```
+
+#### Optimization
+```http
+POST /api/v1/optimization/trigger
+  → Trigger optimization
+  → Body: {cluster_id, optimization_type}
+  → Returns: {optimization_id, status}
+
+GET /api/v1/optimization/history
+  → Get optimization history
+  → Query params: cluster_id, limit, offset
+  → Returns: [{optimization_id, type, savings, timestamp}]
+```
+
+#### EventBridge Integration
+```http
+GET /api/v1/events/spot-warnings
+  → Get recent Spot warnings
+  → Query params: cluster_id, since
+  → Returns: [{event_id, instance_id, event_time, action_taken}]
+
+POST /api/v1/events/process
+  → Manually process Spot event
+  → Body: {event_id}
+  → Returns: {status, action_taken}
+```
+
+#### Remote Kubernetes Operations (Agentless)
+```http
+GET /api/v1/k8s/{cluster_id}/nodes
+  → List cluster nodes (via remote K8s API)
+  → Returns: [{node_name, instance_id, status, cpu, memory}]
+
+GET /api/v1/k8s/{cluster_id}/pods
+  → List cluster pods (via remote K8s API)
+  → Returns: [{pod_name, namespace, node, status}]
+
+GET /api/v1/k8s/{cluster_id}/metrics
+  → Get cluster metrics (via remote K8s API)
+  → Returns: ClusterMetrics (see schema)
+
+POST /api/v1/k8s/{cluster_id}/nodes/drain
+  → Drain node remotely
+  → Body: {node_name, grace_period}
+  → Returns: {task_id, status}
+
+POST /api/v1/k8s/{cluster_id}/nodes/cordon
+  → Cordon node remotely
+  → Body: {node_name}
+  → Returns: {status}
+
+POST /api/v1/k8s/{cluster_id}/scale
+  → Scale deployment remotely
+  → Body: {deployment_name, namespace, replicas}
+  → Returns: {status}
+```
+
+#### Ghost Probe Scanner
+```http
+POST /api/v1/scanner/scan
+  → Scan for ghost instances
+  → Body: {customer_id}
+  → Returns: {scan_id, ghosts_found}
+
+GET /api/v1/scanner/ghosts
+  → List detected ghost instances
+  → Returns: [{instance_id, detected_at, status}]
+
+POST /api/v1/scanner/terminate/{id}
+  → Terminate ghost instance
+  → Returns: {status, terminated_at}
 ```
 
 ---
 
-## 🗄️ Database Schema
+## 🔧 Authentication
 
-### Ownership
-**Owner**: Central Server
-**Access**:
-- Central Server: Read/Write
-- ML Server: Read-Only
-- Client Agent: None (accesses via Central Server API)
+### API Key Authentication
+**Used For**: Core Platform ↔ ML Server
+**Header**: `X-API-Key: <api_key>`
 
-### Connection Strings
-```bash
-# Central Server (read/write)
-postgresql://central_server:password@postgres:5432/cloudoptim
+### Service Account Token
+**Used For**: Core Platform → Remote Kubernetes API
+**Header**: `Authorization: Bearer <service_account_token>`
 
-# ML Server (read-only)
-postgresql://ml_server_ro:password@postgres:5432/cloudoptim
-```
-
-### Core Tables
-
-#### customers
-```sql
-CREATE TABLE customers (
-    customer_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    company_name VARCHAR(255) NOT NULL,
-    email VARCHAR(255) NOT NULL UNIQUE,
-
-    -- AWS Integration
-    aws_role_arn VARCHAR(512),
-    sqs_queue_url VARCHAR(512),
-    external_id VARCHAR(128),
-
-    -- Status
-    status VARCHAR(50) DEFAULT 'active',  -- active, suspended, trial
-
-    -- Timestamps
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
-);
-```
-
-#### clusters
-```sql
-CREATE TABLE clusters (
-    cluster_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    customer_id UUID REFERENCES customers(customer_id) ON DELETE CASCADE,
-
-    cluster_name VARCHAR(255) NOT NULL,
-    region VARCHAR(50) NOT NULL,
-
-    -- Kubernetes connection
-    k8s_api_endpoint VARCHAR(512),
-    k8s_token TEXT,  -- Encrypted
-    k8s_version VARCHAR(50),
-
-    -- State
-    node_count INT DEFAULT 0,
-    pod_count INT DEFAULT 0,
-    status VARCHAR(50) DEFAULT 'active',
-
-    -- Timestamps
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
-    last_seen_at TIMESTAMP,
-
-    UNIQUE(customer_id, cluster_name)
-);
-```
-
-#### nodes
-```sql
-CREATE TABLE nodes (
-    node_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    cluster_id UUID REFERENCES clusters(cluster_id) ON DELETE CASCADE,
-
-    node_name VARCHAR(255) NOT NULL,
-    instance_id VARCHAR(50),
-    instance_type VARCHAR(50),
-    availability_zone VARCHAR(50),
-
-    -- Node type
-    node_type VARCHAR(20),  -- spot, on-demand
-
-    -- Resources
-    cpu_allocatable DECIMAL(10, 2),
-    memory_allocatable_gb DECIMAL(10, 2),
-
-    -- Status
-    status VARCHAR(50) DEFAULT 'Ready',
-
-    -- Timestamps
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW(),
-    terminated_at TIMESTAMP,
-
-    UNIQUE(cluster_id, node_name)
-);
-```
-
-#### spot_events
-```sql
-CREATE TABLE spot_events (
-    event_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    cluster_id UUID REFERENCES clusters(cluster_id),
-
-    instance_id VARCHAR(50) NOT NULL,
-    event_type VARCHAR(50) NOT NULL,
-
-    -- Timing
-    received_at TIMESTAMP DEFAULT NOW(),
-    interruption_time TIMESTAMP,
-
-    -- Action
-    action_taken VARCHAR(255),
-    replacement_instance_id VARCHAR(50),
-
-    -- Metadata
-    metadata JSONB
-);
-```
-
-#### optimization_history
-```sql
-CREATE TABLE optimization_history (
-    optimization_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    cluster_id UUID REFERENCES clusters(cluster_id),
-
-    optimization_type VARCHAR(50) NOT NULL,
-
-    -- Request and response
-    request_data JSONB,
-    recommendations JSONB,
-    execution_plan JSONB,
-
-    -- Savings
-    estimated_savings DECIMAL(10, 2),
-    actual_savings DECIMAL(10, 2),
-
-    -- Status
-    status VARCHAR(50) DEFAULT 'pending',  -- pending, executing, completed, failed
-
-    -- Timestamps
-    created_at TIMESTAMP DEFAULT NOW(),
-    executed_at TIMESTAMP,
-    completed_at TIMESTAMP,
-
-    -- Error handling
-    error_message TEXT
-);
-```
+### AWS IAM Role
+**Used For**: Core Platform → AWS APIs (EC2, SQS)
+**Method**: Cross-account IAM role assumption
 
 ---
 
-## ⚙️ Configuration Management
+## 📁 Common Directory Structure
 
-### Configuration Files Structure
 ```
-common/config/
-├── common.yaml          # Shared by all servers
-├── development.yaml     # Dev environment overrides
-├── staging.yaml         # Staging environment overrides
-└── production.yaml      # Production environment overrides
-```
-
-### common.yaml
-```yaml
-# Common configuration shared across all servers
-environment: production  # development, staging, production
-
-# Logging
-logging:
-  level: INFO  # DEBUG, INFO, WARNING, ERROR
-  format: json  # json, text
-  output: stdout  # stdout, file
-
-# Database
-database:
-  host: postgres.internal
-  port: 5432
-  name: cloudoptim
-  pool_size: 10
-  max_overflow: 20
-  echo: false  # SQL query logging
-
-# Redis
-redis:
-  host: redis.internal
-  port: 6379
-  db: 0
-  password: null
-  ttl_seconds: 3600
-
-# API Settings
-api:
-  request_timeout_seconds: 30
-  rate_limit_per_minute: 60
-
-# AWS
-aws:
-  region: us-east-1
-  spot_advisor_url: "https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json"
-  spot_advisor_refresh_interval_seconds: 21600  # 6 hours
-```
-
-### Loading Configuration
-```python
-# common/config/loader.py
-import yaml
-from pathlib import Path
-from typing import Dict, Any
-
-def load_config(env: str = "production") -> Dict[str, Any]:
-    """Load configuration for specified environment"""
-    config_dir = Path(__file__).parent
-
-    # Load base config
-    with open(config_dir / "common.yaml") as f:
-        config = yaml.safe_load(f)
-
-    # Load environment-specific overrides
-    env_file = config_dir / f"{env}.yaml"
-    if env_file.exists():
-        with open(env_file) as f:
-            env_config = yaml.safe_load(f)
-            config.update(env_config)
-
-    return config
+common/
+├── INTEGRATION_GUIDE.md   # This file
+├── schemas/
+│   ├── __init__.py
+│   ├── models.py          # Core Pydantic models
+│   ├── requests.py        # API request schemas
+│   ├── responses.py       # API response schemas
+│   ├── k8s_models.py      # Kubernetes models
+│   └── aws_models.py      # AWS event models
+├── auth/
+│   ├── __init__.py
+│   ├── api_key.py         # API key authentication
+│   └── k8s_token.py       # K8s service account token handling
+├── config/
+│   ├── __init__.py
+│   ├── common.yaml        # Shared config
+│   └── constants.py       # Common constants
+└── utils/
+    ├── __init__.py
+    ├── logging.py         # Structured logging
+    ├── retry.py           # Retry logic
+    └── validation.py      # Common validation
 ```
 
 ---
 
 ## 🔄 Data Flow Examples
 
-### Example 1: Spot Optimization Flow
+### Example 1: Spot Optimization (End-to-End)
 
 ```
-1. Admin triggers optimization via UI
-   Admin Frontend → Central Server: POST /api/v1/admin/optimization/trigger
-   Body: {"cluster_id": "cluster-123", "optimization_type": "spot_optimize"}
+1. Core Platform → Remote K8s API: GET /api/v1/nodes
+   → Returns: List of nodes with metrics
 
-2. Central Server fetches cluster state
-   Central Server → Database: SELECT * FROM clusters WHERE cluster_id = 'cluster-123'
-   Central Server → Database: SELECT * FROM nodes WHERE cluster_id = 'cluster-123'
+2. Core Platform → ML Server: POST /api/v1/ml/decision/spot-optimize
+   → Body: DecisionRequest with current cluster state
 
-3. Central Server requests ML decision
-   Central Server → ML Server: POST /api/v1/ml/decision/spot-optimize
-   Body: DecisionRequest {
-       cluster_id: "cluster-123",
-       current_state: {...},
-       requirements: {"cpu_required": 2.0, "node_count": 10}
-   }
+3. ML Server: Analyze cluster, run Spot optimizer decision engine
+   → Uses AWS Spot Advisor public data
+   → Calculates risk scores
 
-4. ML Server processes and responds
-   ML Server: Run SpotOptimizerEngine
-   ML Server → Central Server: DecisionResponse {
-       recommendations: [
-           {instance_type: "c5.large", node_count: 6, monthly_savings: 450},
-           {instance_type: "m5a.large", node_count: 4, monthly_savings: 350}
-       ],
-       estimated_savings: 800,
-       execution_plan: [...]
-   }
+4. ML Server → Core Platform: DecisionResponse
+   → Returns: Recommendations with execution plan
 
-5. Central Server executes plan
-   Central Server → AWS EC2: RunInstances (launch Spot instances)
-   Central Server → Database: INSERT INTO optimization_history (...)
+5. Core Platform: Validate recommendations, check safety constraints
 
-6. Central Server sends tasks to Client Agent
-   Client Agent → Central Server: GET /api/v1/client/tasks?cluster_id=cluster-123
-   Central Server → Client Agent: [
-       {task_type: "label_node", parameters: {...}},
-       {task_type: "drain_node", parameters: {...}}
-   ]
+6. Core Platform → AWS EC2 API: RunInstances
+   → Launch new Spot instances per recommendations
 
-7. Client Agent executes and reports
-   Client Agent: Execute tasks on Kubernetes
-   Client Agent → Central Server: POST /api/v1/client/tasks/task-456/result
-   Body: TaskResult {status: "success", logs: "...", duration_seconds: 45.2}
+7. New instances join cluster (kubelet self-registers)
 
-8. Central Server updates database and dashboard
-   Central Server → Database: UPDATE optimization_history SET status='completed'
-   Central Server → Admin Frontend (WebSocket): {
-       type: "optimization_complete",
-       savings: 800,
-       status: "success"
-   }
+8. Core Platform → Remote K8s API: POST /api/v1/namespaces/.../pods/.../eviction
+   → Drain old nodes
+
+9. Core Platform → AWS EC2 API: TerminateInstances
+   → Terminate old instances
+
+10. Core Platform → Database: Record optimization, calculate savings
 ```
 
-### Example 2: Spot Interruption Handling
+### Example 2: Spot Interruption Handling (Real-Time)
 
 ```
-1. AWS emits Spot interruption warning
-   AWS EventBridge → SQS Queue: EC2 Spot Instance Interruption Warning
-   Event: {instance-id: "i-1234abcd", interruption-time: "2025-11-28T10:32:00Z"}
+1. AWS EC2: Spot instance i-1234 will terminate in 2 minutes
 
-2. Central Server polls SQS
-   Central Server → SQS: ReceiveMessage (every 5 seconds)
-   Central Server: Parse event
+2. AWS → EventBridge: Spot interruption warning event
 
-3. Central Server identifies affected node
-   Central Server → Database: SELECT * FROM nodes WHERE instance_id = 'i-1234abcd'
-   Result: {node_name: "ip-10-0-1-23", cluster_id: "cluster-123"}
+3. EventBridge → Customer SQS Queue: Forward event
 
-4. Central Server requests replacement recommendation
-   Central Server → ML Server: POST /api/v1/ml/decision/spot-optimize
-   Body: {requirements: {cpu: 2, memory: 8, urgent: true}}
+4. Core Platform (SQS Poller): Poll queue every 5 seconds
+   → Receive event
 
-5. Central Server launches replacement
-   Central Server → AWS EC2: RunInstances (On-Demand for reliability)
-   Result: {instance-id: "i-5678efgh"}
+5. Core Platform: Parse event, identify cluster and node
 
-6. Central Server sends drain task to Client
-   Client Agent → Central Server: GET /api/v1/client/tasks
-   Central Server → Client Agent: [
-       {task_type: "drain_node", parameters: {node_name: "ip-10-0-1-23", grace_period: 90}}
-   ]
+6. Core Platform → Remote K8s API: POST /api/v1/namespaces/.../pods/.../eviction
+   → Drain node (evict all pods with grace period)
 
-7. Client Agent drains node
-   Client Agent → Kubernetes: Cordon node
-   Client Agent → Kubernetes: Evict all pods (gracefully)
-   Client Agent → Central Server: POST /api/v1/client/tasks/task-789/result
+7. Core Platform → AWS EC2 API: RunInstances
+   → Launch replacement instance
 
-8. Central Server records event
-   Central Server → Database: INSERT INTO spot_events (...)
-   Central Server → Admin Frontend: WebSocket update (Spot event handled)
+8. Core Platform: Monitor drain progress via Remote K8s API
+
+9. New instance joins cluster, workloads rescheduled
+
+10. Core Platform → AWS EC2 API: TerminateInstances
+    → Terminate interrupted instance (optional, will auto-terminate)
+
+11. Core Platform → Database: Record Spot event, action taken
+```
+
+### Example 3: Ghost Probe Scanner
+
+```
+1. Core Platform (Scheduler): Trigger scan every 6 hours
+
+2. Core Platform → AWS EC2 API: DescribeInstances
+   → Get all running EC2 instances in customer account
+
+3. Core Platform → Remote K8s API: GET /api/v1/nodes
+   → Get all Kubernetes nodes
+
+4. Core Platform: Compare EC2 instances vs K8s nodes
+   → Identify instances running but NOT in K8s (ghost instances)
+
+5. Core Platform → Database: Store ghost instances
+   → Status: detected, detected_at: now
+
+6. After 24-hour grace period:
+   Core Platform → AWS EC2 API: TerminateInstances
+   → Terminate ghost instances
+
+7. Core Platform → Webhook: Notify customer
+   → Send Slack/email notification
+
+8. Core Platform → Database: Update ghost instance status
+   → Status: terminated, terminated_at: now
 ```
 
 ---
 
-## 📝 Error Handling Standards
+## 🛡️ Error Handling Standards
 
 ### HTTP Status Codes
-```
-200 OK - Request successful
-201 Created - Resource created
-400 Bad Request - Invalid input
-401 Unauthorized - Invalid API key
-403 Forbidden - Insufficient permissions
-404 Not Found - Resource not found
-409 Conflict - Resource conflict (e.g., duplicate)
-422 Unprocessable Entity - Validation error
-429 Too Many Requests - Rate limit exceeded
-500 Internal Server Error - Server error
-503 Service Unavailable - Service down
-```
+- `200 OK` - Success
+- `201 Created` - Resource created
+- `400 Bad Request` - Invalid input
+- `401 Unauthorized` - Authentication failed
+- `403 Forbidden` - Insufficient permissions
+- `404 Not Found` - Resource not found
+- `409 Conflict` - Resource conflict
+- `429 Too Many Requests` - Rate limit exceeded
+- `500 Internal Server Error` - Server error
+- `503 Service Unavailable` - Service temporarily unavailable
 
 ### Error Response Format
 ```json
 {
   "error": {
     "code": "INVALID_REQUEST",
-    "message": "Invalid cluster_id provided",
+    "message": "Instance type 'm5.invalidsize' is not valid",
     "details": {
-      "field": "cluster_id",
-      "constraint": "must be valid UUID"
+      "field": "instance_type",
+      "valid_values": ["m5.large", "m5.xlarge", ...]
     },
-    "request_id": "req-12345",
-    "timestamp": "2025-11-28T10:00:00Z"
+    "timestamp": "2025-11-28T10:00:00Z",
+    "request_id": "req-12345"
   }
 }
 ```
 
-### Retry Logic
+### Retry Strategy
 ```python
-# common/utils/retry.py
-import asyncio
-from typing import Callable, Any
+# For remote K8s API calls
+MAX_RETRIES = 3
+BACKOFF_FACTOR = 2  # Exponential backoff
+TIMEOUT = 30  # seconds
 
-async def retry_with_backoff(
-    func: Callable,
-    max_retries: int = 3,
-    initial_delay: float = 1.0,
-    backoff_factor: float = 2.0
-):
-    """Retry function with exponential backoff"""
-    delay = initial_delay
+# For SQS polling
+VISIBILITY_TIMEOUT = 30  # seconds
+WAIT_TIME = 20  # Long polling
 
-    for attempt in range(max_retries):
-        try:
-            return await func()
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise
-
-            await asyncio.sleep(delay)
-            delay *= backoff_factor
+# For AWS EC2 API calls
+MAX_RETRIES = 5
+BACKOFF_FACTOR = 1.5
 ```
 
 ---
 
-## 🎯 Integration Checklist
+## 📌 Important Notes
 
-### ML Server ↔ Central Server
-- [ ] Central Server has ML Server URL configured
-- [ ] Central Server has ML Server API key
-- [ ] ML Server validates Central Server requests
-- [ ] Common schemas aligned (DecisionRequest, DecisionResponse)
-- [ ] Error handling implemented
-- [ ] Timeout handling configured
-- [ ] Health check endpoint tested
-
-### Central Server ↔ Client Agent
-- [ ] Client Agent has Central Server URL
-- [ ] Client Agent has valid API key (in Secret)
-- [ ] Central Server validates Client requests
-- [ ] Task polling working
-- [ ] Metrics submission working
-- [ ] WebSocket connection stable
-- [ ] Common schemas aligned (Task, TaskResult, ClusterMetrics)
-
-### Central Server ↔ Database
-- [ ] Database schema created
-- [ ] Migrations applied
-- [ ] Central Server connection pool configured
-- [ ] ML Server read-only access configured
-- [ ] Indexes created for performance
-- [ ] Backup strategy implemented
-
-### Central Server ↔ Admin Frontend
-- [ ] Frontend has API URL configured
-- [ ] CORS configured correctly
-- [ ] WebSocket connection working
-- [ ] Real-time updates flowing
-- [ ] Authentication working
+1. **Agentless Architecture**: NO client-side components, all operations via remote APIs
+2. **Remote K8s API**: Service account token required, RBAC permissions must be configured
+3. **EventBridge + SQS**: Customer must set up in their AWS account for Spot warnings
+4. **Public Data First**: AWS Spot Advisor provides Day Zero recommendations
+5. **Security**: All tokens/credentials encrypted at rest, TLS for all communication
 
 ---
 
-**END OF INTEGRATION GUIDE**
-*Update this document when adding new integration points or changing schemas*
+## 🎯 Customer Onboarding Checklist
+
+### AWS Setup
+- [ ] Create IAM role with CloudOptim trust policy
+- [ ] Attach required EC2 + SQS permissions
+- [ ] Create EventBridge rule for Spot interruptions
+- [ ] Create SQS queue: `cloudoptim-spot-warnings-{customer_id}`
+- [ ] Configure EventBridge to target SQS queue
+
+### Kubernetes Setup
+- [ ] Create service account: `cloudoptim` in `kube-system`
+- [ ] Create ClusterRole with required permissions
+- [ ] Create ClusterRoleBinding
+- [ ] Generate service account token
+- [ ] Verify remote API access (test connection)
+
+### CloudOptim Setup
+- [ ] Register cluster in Core Platform
+- [ ] Provide K8s API endpoint + service account token
+- [ ] Provide AWS IAM Role ARN + SQS Queue URL
+- [ ] Verify EventBridge/SQS integration
+- [ ] Run initial optimization
+- [ ] Monitor for 24 hours
+
+---
+
+**END OF INTEGRATION GUIDE - AGENTLESS ARCHITECTURE**

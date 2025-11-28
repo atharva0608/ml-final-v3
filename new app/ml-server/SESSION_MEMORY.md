@@ -2,7 +2,8 @@
 
 ## 📋 Overview
 **Component**: ML Server (Machine Learning & Decision Engine)
-**Purpose**: Handles ML model loading, predictions, and intelligent decision-making for Kubernetes cost optimization
+**Purpose**: Inference-only ML server for predictions and decision-making in agentless Kubernetes cost optimization
+**Architecture**: Agentless (No client-side agents, remote K8s API only)
 **Instance Type**: Standalone server (can run on separate instance)
 **Created**: 2025-11-28
 **Last Updated**: 2025-11-28
@@ -37,21 +38,25 @@
 
 ---
 
-## 🔌 Integration Points (Common Components)
+## 🔌 Integration Points (Agentless Architecture)
 
-### A. Communication with Central Server
+### A. Communication with Core Platform
 **Protocol**: REST API + WebSocket (for real-time updates)
+**Direction**: Core Platform → ML Server (request/response)
 **Endpoints**:
-- `POST /api/v1/ml/predict` - Receive prediction requests from Central Server
+- `POST /api/v1/ml/predict` - Receive prediction requests from Core Platform
 - `POST /api/v1/ml/decision` - Receive decision engine requests
 - `GET /api/v1/ml/health` - Health check endpoint
 - `WS /api/v1/ml/stream` - Real-time predictions stream
 
 **Data Flow**:
 ```
-Central Server → ML Server: Request for decision/prediction
-ML Server → Central Server: Decision output with recommendations
+Core Platform → ML Server: Request for decision/prediction
+ML Server → Core Platform: Decision output with recommendations
+ML Server: No direct interaction with customer clusters (agentless)
 ```
+
+**Note**: ML Server does NOT interact with customer clusters directly. All cluster operations are handled by Core Platform via remote Kubernetes API.
 
 ### B. Data Exchange Format (COMMON SCHEMA)
 ```json
@@ -85,24 +90,26 @@ ML Server → Central Server: Decision output with recommendations
 ### C. Shared Configuration
 **Location**: `/config/common.yaml`
 **Contains**:
-- Central Server connection details
-- Database credentials (read-only access)
-- AWS IAM role ARN
-- Redis cache connection
+- Core Platform connection details
+- Redis cache connection (for Spot Advisor data, pricing cache)
+- AWS region configuration
 - Logging configuration
 
-### D. Database Access
-**Type**: Read-only access to Central Server database
-**Purpose**:
-- Fetch historical cluster metrics
-- Retrieve customer configuration
-- Access training data for model updates
+**Note**: ML Server does NOT directly access customer databases or clusters
 
-**Tables Used**:
-- `clusters` - Cluster metadata
-- `spot_history` - Historical spot interruptions
-- `metrics_timeseries` - Cluster performance metrics
-- `customer_config` - Customer-specific settings
+### D. Data Sources
+**Public Data (No Customer Data Needed)**:
+- AWS Spot Advisor JSON: `https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json`
+- AWS APIs (via Core Platform): Spot price history, instance metadata
+
+**Purpose**:
+- Spot interruption rate data (public)
+- Historical price trends for risk scoring
+- Gap-filling with AWS historic price data
+
+**Day Zero Operation**:
+- ML Server can make recommendations immediately using public Spot Advisor data
+- No historical customer data required for initial decisions
 
 ---
 
@@ -195,30 +202,34 @@ ML_SERVER_HOST=0.0.0.0
 ML_SERVER_PORT=8001
 ML_SERVER_WORKERS=4
 
-# Central Server Connection
-CENTRAL_SERVER_URL=http://central-server:8000
-CENTRAL_SERVER_API_KEY=xxx
+# Core Platform Connection
+CORE_PLATFORM_URL=http://core-platform:8000
+CORE_PLATFORM_API_KEY=xxx
 
-# Database (Read-Only)
-DB_HOST=central-db.internal
-DB_PORT=5432
-DB_NAME=cloudoptim
-DB_USER=ml_server_ro
-DB_PASSWORD=xxx
-
-# Redis Cache
+# Redis Cache (for Spot Advisor data, pricing)
 REDIS_HOST=redis.internal
 REDIS_PORT=6379
 REDIS_DB=0
+REDIS_CACHE_TTL=3600  # 1 hour cache for Spot Advisor
 
-# AWS Configuration
+# AWS Configuration (for data fetching only, no cluster access)
 AWS_REGION=us-east-1
-AWS_ROLE_ARN=arn:aws:iam::xxx:role/MLServerRole
+SPOT_ADVISOR_URL=https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json
 
 # Model Configuration
-MODEL_DIR=/app/models/saved
-MODEL_VERSION=v1
+MODEL_UPLOAD_DIR=/app/models/uploaded
+MODEL_ACTIVE_VERSION=v1
+ALLOW_MODEL_TRAINING=false  # Explicitly disabled (inference-only)
 AUTO_RELOAD_MODELS=true
+
+# Gap Filler Configuration
+GAP_FILLER_ENABLED=true
+GAP_FILLER_AWS_REGION=us-east-1
+GAP_FILLER_HISTORIC_DAYS_MAX=90
+
+# Decision Engine Configuration
+DECISION_ENGINE_DIR=/app/engines
+DECISION_ENGINE_ACTIVE=spot_optimizer_v1
 ```
 
 ### Docker Configuration
@@ -449,6 +460,13 @@ Response:
 
 ## 🔄 Session Updates Log (Continued)
 
+### 2025-11-28 - Architecture Update: Agentless + Inference-Only ML Server
+
+**CRITICAL ARCHITECTURE CHANGES**:
+1. ✅ **Agentless Architecture** - No client-side agents, no DaemonSets
+2. ✅ **Inference-Only ML Server** - Upload pre-trained models, no training on production
+3. ✅ **Public Data First** - Day Zero operation using AWS Spot Advisor (public data)
+
 ### 2025-11-28 - Architecture Update: Inference-Only ML Server
 
 **CRITICAL ARCHITECTURE CHANGE**: ML Server is now **inference and experimentation only**
@@ -648,3 +666,29 @@ DECISION_ENGINE_ACTIVE=spot_optimizer_v1
 4. Test decision engine swapping
 
 ---
+
+---
+
+## 🚫 What ML Server Does NOT Do (Agentless Architecture)
+
+**NO Client-Side Components**:
+- ❌ No DaemonSets in customer clusters
+- ❌ No client-side agents to install or manage
+- ❌ No direct access to customer Kubernetes API
+- ❌ No direct access to customer databases
+
+**All Cluster Operations via Core Platform**:
+- Core Platform handles remote Kubernetes API calls
+- Core Platform polls AWS EventBridge/SQS for Spot warnings
+- Core Platform executes optimization plans on clusters
+- ML Server only provides predictions and recommendations
+
+**Public Data First (Day Zero)**:
+- Uses AWS Spot Advisor public data for interruption rates
+- No customer historical data needed for initial operation
+- Works immediately after onboarding
+
+---
+
+**END OF SESSION MEMORY - ML SERVER (AGENTLESS ARCHITECTURE)**
+
