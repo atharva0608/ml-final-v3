@@ -1,0 +1,149 @@
+version: '3.8'
+
+services:
+  # PostgreSQL for Core Platform
+  postgres-core:
+    image: postgres:15-alpine
+    container_name: cloudoptim-postgres-core
+    environment:
+      POSTGRES_USER: cloudoptim
+      POSTGRES_PASSWORD: cloudoptim_dev_password
+      POSTGRES_DB: core_platform_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-core-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cloudoptim"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL for ML Server
+  postgres-ml:
+    image: postgres:15-alpine
+    container_name: cloudoptim-postgres-ml
+    environment:
+      POSTGRES_USER: ml_server
+      POSTGRES_PASSWORD: ml_server_dev_password
+      POSTGRES_DB: ml_server_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-ml-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ml_server"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis (shared by both components)
+  redis:
+    image: redis:7-alpine
+    container_name: cloudoptim-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ML Server Backend
+  ml-server:
+    build:
+      context: ../ml-server
+      dockerfile: Dockerfile
+    container_name: cloudoptim-ml-server
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql://ml_server:ml_server_dev_password@postgres-ml:5432/ml_server_db
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: dev_jwt_secret_key_change_in_production
+      API_KEY_SALT: dev_api_key_salt_change_in_production
+      LOG_LEVEL: INFO
+      ENVIRONMENT: development
+    depends_on:
+      postgres-ml:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ml-models:/app/models/uploaded
+      - ml-engines:/app/decision_engine/uploaded
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ML Server Frontend
+  ml-frontend:
+    build:
+      context: ../ml-server/ml-frontend
+      dockerfile: Dockerfile
+    container_name: cloudoptim-ml-frontend
+    ports:
+      - "3001:3001"
+    environment:
+      REACT_APP_API_URL: http://localhost:8001
+    depends_on:
+      - ml-server
+
+  # Core Platform Backend
+  core-platform:
+    build:
+      context: ../core-platform
+      dockerfile: Dockerfile
+    container_name: cloudoptim-core-platform
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://cloudoptim:cloudoptim_dev_password@postgres-core:5432/core_platform_db
+      REDIS_URL: redis://redis:6379/1
+      JWT_SECRET_KEY: dev_jwt_secret_key_change_in_production
+      API_KEY_SALT: dev_api_key_salt_change_in_production
+      ML_SERVER_URL: http://ml-server:8001
+      AWS_REGION: us-east-1
+      LOG_LEVEL: INFO
+      ENVIRONMENT: development
+    depends_on:
+      postgres-core:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ml-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Core Platform Admin Frontend
+  admin-frontend:
+    build:
+      context: ../core-platform/admin-frontend
+      dockerfile: Dockerfile
+    container_name: cloudoptim-admin-frontend
+    ports:
+      - "3000:80"
+    environment:
+      REACT_APP_API_URL: http://localhost:8000
+    depends_on:
+      - core-platform
+
+volumes:
+  postgres-core-data:
+  postgres-ml-data:
+  redis-data:
+  ml-models:
+  ml-engines:
+
+networks:
+  default:
+    name: cloudoptim-network
