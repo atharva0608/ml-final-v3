@@ -758,17 +758,48 @@ print("="*80)
 
 # Import enhanced visualization module
 # Add the training directory to Python path to ensure visualization_insights can be imported
-script_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
-if str(script_dir) not in sys.path:
-    sys.path.insert(0, str(script_dir))
+import os
 
-from visualization_insights import (
-    create_price_prediction_comparison,
-    create_risk_stability_dashboard,
-    create_price_trend_analysis,
-    create_model_performance_dashboard,
-    create_summary_insights
-)
+# Method 1: Try to get the script/notebook directory
+try:
+    if '__file__' in globals():
+        # Running as a script
+        script_dir = Path(__file__).parent.resolve()
+    else:
+        # Running in Jupyter notebook - try to get the notebook's directory
+        # Use os.getcwd() which should be the notebook's working directory
+        script_dir = Path(os.getcwd()).resolve()
+except:
+    script_dir = Path.cwd().resolve()
+
+# Add multiple potential paths to ensure the module is found
+paths_to_add = [
+    str(script_dir),  # Current directory
+    str(script_dir / 'training'),  # In case we're in parent directory
+    str(script_dir.parent / 'training'),  # In case we're in a subdirectory
+]
+
+for path in paths_to_add:
+    if os.path.exists(path) and path not in sys.path:
+        sys.path.insert(0, path)
+
+# Now import the visualization module
+try:
+    from visualization_insights import (
+        create_price_prediction_comparison,
+        create_risk_stability_dashboard,
+        create_price_trend_analysis,
+        create_model_performance_dashboard,
+        create_summary_insights
+    )
+    print("✓ Successfully imported visualization_insights module")
+except ImportError as e:
+    print(f"❌ Failed to import visualization_insights: {e}")
+    print(f"Current directory: {os.getcwd()}")
+    print(f"Script directory: {script_dir}")
+    print(f"sys.path: {sys.path[:3]}")
+    print("\nPlease ensure visualization_insights.py is in the same directory as this script.")
+    raise
 
 # Figure 1: Price Prediction Comparison with Insights
 print("\n📈 1. Price Prediction Analysis (Top 4 Pools)...")
