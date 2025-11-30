@@ -62,7 +62,7 @@ CONFIG = {
 
     # Data parameters
     'region': 'ap-south-1',  # Mumbai
-    'instance_types': ['m5.large', 'c5.large', 'r5.large', 't3.large'],  # Your 4 instances
+    'instance_types': ['t3.medium', 't4g.medium', 'c5.large', 't4g.small'],  # Your 4 instances
 
     # Training parameters
     'train_end_date': '2024-12-31',  # Train on 2023-2024 data
