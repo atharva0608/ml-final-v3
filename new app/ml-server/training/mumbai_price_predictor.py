@@ -821,8 +821,13 @@ def create_risk_stability_dashboard(pool_risk_scores, savings_by_pool):
     fig, axes = plt.subplots(2, 2, figsize=(18, 12))
     fig.suptitle('Pool Risk & Stability Analysis - Investment Decision Matrix', fontsize=16, fontweight='bold')
 
-    # Merge data
-    merged = pool_risk_scores.merge(savings_by_pool, on=['instance_type', 'availability_zone'])
+    # Merge data - select unique columns from pool_risk_scores to avoid duplicates
+    pool_unique_cols = ['instance_type', 'availability_zone', 'avg_volatility_7d', 'avg_spot_price']
+    merged = savings_by_pool.merge(
+        pool_risk_scores[pool_unique_cols],
+        on=['instance_type', 'availability_zone'],
+        how='left'
+    )
 
     # 1. Risk Score vs Savings Scatter (Investment Matrix)
     ax1 = axes[0, 0]
@@ -1130,8 +1135,13 @@ def create_summary_insights(pool_risk_scores, savings_by_pool, metrics):
     gs = fig.add_gridspec(2, 3, hspace=0.3, wspace=0.3)
     fig.suptitle('Executive Summary - Key Insights & Recommendations', fontsize=16, fontweight='bold')
 
-    # Merge data
-    merged = pool_risk_scores.merge(savings_by_pool, on=['instance_type', 'availability_zone'])
+    # Merge data - select unique columns from pool_risk_scores to avoid duplicates
+    pool_unique_cols = ['instance_type', 'availability_zone', 'avg_volatility_7d', 'avg_spot_price']
+    merged = savings_by_pool.merge(
+        pool_risk_scores[pool_unique_cols],
+        on=['instance_type', 'availability_zone'],
+        how='left'
+    )
 
     # 1. Best Pool Recommendation
     ax1 = fig.add_subplot(gs[0, 0])
