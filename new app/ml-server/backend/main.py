@@ -107,9 +107,14 @@ async def root():
     """Root endpoint - API information"""
     return {
         "service": "ML Server",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "status": "running",
         "architecture": "agentless",
+        "features": {
+            "decision_engines": 12,  # 8 core + 4 advanced
+            "advanced_features": 4,  # IPv4, Image Bloat, Shadow IT, Noisy Neighbor
+            "feature_toggles": True
+        },
         "endpoints": {
             "health": "/api/v1/ml/health",
             "docs": "/api/v1/ml/docs",
@@ -119,7 +124,34 @@ async def root():
             "refresh": "/api/v1/ml/refresh/*",
             "pricing": "/api/v1/ml/pricing/*",
             "predictions": "/api/v1/ml/predict/*",
-            "decisions": "/api/v1/ml/decision/*"
+            "decisions": "/api/v1/ml/decision/*",
+            "features": "/api/v1/ml/features/*"
+        },
+        "decision_engines": {
+            "core": [
+                "/api/v1/ml/decision/spot-optimize",
+                "/api/v1/ml/decision/bin-pack",
+                "/api/v1/ml/decision/rightsize",
+                "/api/v1/ml/decision/office-hours",
+                "/api/v1/ml/decision/ghost-probe",
+                "/api/v1/ml/decision/volume-cleanup",
+                "/api/v1/ml/decision/network-optimize",
+                "/api/v1/ml/decision/oomkilled-remediation"
+            ],
+            "advanced": [
+                "/api/v1/ml/decision/ipv4-cost-tracking",
+                "/api/v1/ml/decision/image-bloat-analysis",
+                "/api/v1/ml/decision/shadow-it-detection",
+                "/api/v1/ml/decision/noisy-neighbor-detection"
+            ],
+            "batch": "/api/v1/ml/decision/batch"
+        },
+        "feature_management": {
+            "get_all_toggles": "/api/v1/ml/features/toggles",
+            "get_single_toggle": "/api/v1/ml/features/toggles/{feature_name}",
+            "update_toggle": "/api/v1/ml/features/toggles/{feature_name}",
+            "trigger_scan": "/api/v1/ml/features/toggles/{feature_name}/scan",
+            "get_stats": "/api/v1/ml/features/stats"
         }
     }
 
@@ -163,10 +195,25 @@ async def metrics():
     }
 
 # Import and register routers
-# TODO: Uncomment when routers are implemented
-# from api.routes import models, engines, predictions, gap_filler, pricing, refresh, health
+from api.routes import decisions, features
+
+# Register decision engine routes (all 12 engines: 8 core + 4 advanced)
+app.include_router(
+    decisions.router,
+    prefix="/api/v1/ml",
+    tags=["Decision Engines"]
+)
+
+# Register feature toggle routes
+app.include_router(
+    features.router,
+    prefix="/api/v1/ml",
+    tags=["Feature Toggles"]
+)
+
+# TODO: Implement and register remaining routers
+# from api.routes import models, predictions, gap_filler, pricing, refresh
 # app.include_router(models.router, prefix="/api/v1/ml", tags=["Models"])
-# app.include_router(engines.router, prefix="/api/v1/ml", tags=["Decision Engines"])
 # app.include_router(predictions.router, prefix="/api/v1/ml", tags=["Predictions"])
 # app.include_router(gap_filler.router, prefix="/api/v1/ml", tags=["Data Gap Filling"])
 # app.include_router(pricing.router, prefix="/api/v1/ml", tags=["Pricing Data"])

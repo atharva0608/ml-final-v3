@@ -1229,3 +1229,281 @@ kubectl apply -f infra/kubernetes/core-platform/deployment.yaml
 **Last Updated**: 2025-11-29
 **Maintained By**: Development Team
 **Location**: `new app/common/CHANGES.md`
+
+---
+
+## 2025-11-30 - ML Server: Added 4 Advanced Decision Engines + Model Training
+
+**Component**: ML Server
+**Type**: Feature Addition
+**Impact**: Core Platform (API integration needed), Frontend (new UI components)
+
+### Changes Made
+
+#### 1. New Decision Engines (4 Advanced Features)
+
+**Added Engines**:
+1. **IPv4 Cost Tracker** - Track public IPv4 costs (NEW AWS charge Feb 2024)
+2. **Container Image Bloat Tax** - Detect oversized container images  
+3. **Shadow IT Tracker** - Find AWS resources NOT in Kubernetes
+4. **Noisy Neighbor Detector** - Detect excessive network traffic
+
+**API Impact** (Core Platform needs to implement):
+```
+# New decision endpoints required
+POST /api/v1/ml/decision/ipv4-cost-tracking
+POST /api/v1/ml/decision/image-bloat-analysis
+POST /api/v1/ml/decision/shadow-it-detection
+POST /api/v1/ml/decision/noisy-neighbor-detection
+
+# New feature toggle endpoints
+GET  /api/v1/ml/features/toggles
+PUT  /api/v1/ml/features/toggles/{feature_name}
+```
+
+**Response Schema** (all decision endpoints):
+```typescript
+interface DecisionResponse {
+  engine: string;
+  recommendations: Recommendation[];
+  confidence_score: number;  // 0.0-1.0
+  estimated_savings: number;  // Monthly USD
+  execution_plan: ExecutionStep[];
+  metadata: {
+    // Engine-specific metadata
+    [key: string]: any;
+  };
+}
+
+interface Recommendation {
+  priority: "high" | "medium" | "low";
+  category: string;
+  // ... engine-specific fields
+  monthly_cost?: number;
+  annual_cost?: number;
+  savings_monthly?: number;
+  savings_annual?: number;
+  action: string;
+  description: string;
+}
+```
+
+#### 2. Feature Toggles Configuration
+
+**New Config Section** (`ml_config.yaml`):
+```yaml
+decision_engines:
+  feature_toggles:
+    ipv4_cost_tracking:
+      enabled: true
+      auto_scan_interval_hours: 24
+    image_bloat_analysis:
+      enabled: true
+      auto_scan_interval_hours: 168
+    shadow_it_detection:
+      enabled: true
+      auto_scan_interval_hours: 24
+    noisy_neighbor_detection:
+      enabled: true
+      auto_scan_interval_hours: 6
+```
+
+**Core Platform Integration**:
+- Core Platform should respect these toggles
+- Check feature_toggles before calling decision endpoints
+- Implement automated scanning based on auto_scan_interval_hours
+
+#### 3. Model Training Infrastructure
+
+**New Training Script**: `ml-server/training/train_models.py`
+- Trains Spot Price Predictor models
+- Outputs: model.pkl, metadata.json, scaler.pkl, label_encoders.pkl
+- Hardware: Works on MacBook M4 Air 16GB RAM
+
+**Model Requirements**: See `ml-server/docs/MODEL_REQUIREMENTS.md`
+- 17 input features required
+- Performance targets: MAE < $0.02, R² > 0.85
+- Training data format: CSV with spot price history
+
+**Core Platform Impact**:
+- Model upload API must handle new metadata format
+- Gap filler service needs AWS EC2 API access for price history
+- Model refresh scheduler should be implemented
+
+#### 4. Frontend Changes
+
+**New Component**: `ml-frontend/src/components/FeatureToggles.tsx`
+- Material-UI toggle switches for each feature
+- Real-time enable/disable
+- Displays savings estimates and auto-scan intervals
+
+**Frontend Integration Needed**:
+- Add route: `/features` or `/settings/features`
+- Add to navigation menu
+- Handle API calls to feature toggle endpoints
+
+#### 5. Database Schema Changes (Pending)
+
+**New Tables Needed** (for Core Platform):
+```sql
+CREATE TABLE feature_scan_history (
+    scan_id UUID PRIMARY KEY,
+    feature_name VARCHAR(100) NOT NULL,
+    scan_time TIMESTAMP NOT NULL,
+    findings_count INTEGER,
+    total_savings_monthly DECIMAL(10,2),
+    execution_time_ms INTEGER,
+    status VARCHAR(50)  -- 'completed', 'failed'
+);
+
+CREATE TABLE feature_recommendations (
+    recommendation_id UUID PRIMARY KEY,
+    scan_id UUID REFERENCES feature_scan_history(scan_id),
+    feature_name VARCHAR(100) NOT NULL,
+    priority VARCHAR(20),
+    category VARCHAR(100),
+    resource_id VARCHAR(255),
+    monthly_cost DECIMAL(10,2),
+    savings_monthly DECIMAL(10,2),
+    status VARCHAR(50),  -- 'pending', 'executed', 'dismissed'
+    created_at TIMESTAMP DEFAULT NOW(),
+    executed_at TIMESTAMP
+);
+```
+
+### Breaking Changes
+
+**None** - All new features are additive and optional (controlled by feature toggles)
+
+### Migration Steps (for Core Platform)
+
+1. **Update API Routes**:
+   ```python
+   # Add new decision engine routes
+   from decision_engine import (
+       IPv4CostTrackerEngine,
+       ImageBloatAnalyzerEngine,
+       ShadowITTrackerEngine,
+       NoisyNeighborDetectorEngine
+   )
+   
+   @router.post("/decision/ipv4-cost-tracking")
+   async def ipv4_cost_tracking(request: DecisionRequest):
+       engine = IPv4CostTrackerEngine()
+       return engine.decide(request.cluster_state, request.requirements)
+   ```
+
+2. **Implement Feature Toggle API**:
+   ```python
+   @router.get("/features/toggles")
+   async def get_feature_toggles():
+       # Load from ml_config.yaml
+       return config.decision_engines.feature_toggles
+   
+   @router.put("/features/toggles/{feature_name}")
+   async def update_feature_toggle(feature_name: str, enabled: bool):
+       # Update config and restart services if needed
+       pass
+   ```
+
+3. **Add Automated Scanning Jobs**:
+   ```python
+   # Cron jobs or Celery tasks
+   @celery.task
+   def scan_ipv4_costs():
+       if config.feature_toggles.ipv4_cost_tracking.enabled:
+           engine = IPv4CostTrackerEngine()
+           # Run scan, save results to database
+   ```
+
+4. **Update Database Schema**:
+   ```bash
+   # Run migration
+   alembic upgrade head
+   ```
+
+5. **Update Frontend**:
+   ```typescript
+   // Add route in App.tsx
+   <Route path="/features" element={<FeatureToggles />} />
+   ```
+
+### Testing Checklist
+
+- [ ] Test each new decision engine endpoint
+- [ ] Test feature toggle enable/disable
+- [ ] Test automated scanning (set interval to 1 minute for testing)
+- [ ] Test frontend toggle component
+- [ ] Test model training script
+- [ ] Test model upload workflow
+- [ ] Verify all database migrations
+- [ ] Load test decision endpoints (100+ concurrent requests)
+
+### AWS Permissions Required
+
+**New IAM permissions needed** (for Shadow IT Tracker):
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeAddresses",
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "sts:GetCallerIdentity",
+        "cloudtrail:LookupEvents"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+### Documentation Updated
+
+1. `ml-server/SESSION_MEMORY.md` - Added comprehensive change log
+2. `ml-server/docs/MODEL_REQUIREMENTS.md` - NEW comprehensive guide
+3. `ml-server/training/README.md` - NEW training quick start
+4. `ml-server/decision_engine/__init__.py` - Updated engine list
+
+### Estimated Integration Effort
+
+- **Core Platform API**: 4-6 hours
+- **Database Migration**: 1-2 hours
+- **Automated Scanning**: 3-4 hours
+- **Frontend Integration**: 2-3 hours
+- **Testing**: 3-4 hours
+- **Total**: 13-19 hours
+
+### Rollout Plan
+
+**Phase 1** (Week 1):
+- Deploy new decision engines (disabled by default)
+- Test manually via API
+
+**Phase 2** (Week 2):
+- Enable feature toggles in frontend
+- Enable one feature at a time (start with IPv4 Tracker)
+- Monitor for issues
+
+**Phase 3** (Week 3-4):
+- Enable all features
+- Implement automated scanning
+- Collect user feedback
+
+### Support & Questions
+
+- **Documentation**: See `ml-server/docs/MODEL_REQUIREMENTS.md`
+- **Training Issues**: Check `ml-server/training/README.md`
+- **API Questions**: Review decision engine source code for input/output schemas
+
+---
+
+**Author**: Claude Code
+**Date**: 2025-11-30
+**Review Required**: Yes (Core Platform team)
+**Deployment Risk**: Low (all features optional, no breaking changes)
+
