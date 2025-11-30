@@ -983,12 +983,12 @@ summary_stats = {
     '  RISKY pools': f"{len(pool_risk_scores[pool_risk_scores['risk_category']=='RISKY'])}",
     '  ',
     'Best Pool': '',
-    f"  Instance Type": final_recommendations.iloc[0]['instance_type'],
-    f"  Availability Zone": final_recommendations.iloc[0]['availability_zone'],
-    f"  Risk Category": final_recommendations.iloc[0]['risk_category'],
-    f"  Stability Score": f"{final_recommendations.iloc[0]['stability_score']:.4f}",
-    f"  Annual Savings": f"${final_recommendations.iloc[0]['annual_savings']:.2f}",
-    f"  Discount": f"{final_recommendations.iloc[0]['avg_discount']*100:.2f}%"
+    '  Instance Type': final_recommendations.iloc[0]['instance_type'],
+    '  Availability Zone': final_recommendations.iloc[0]['availability_zone'],
+    '  Risk Category': final_recommendations.iloc[0]['risk_category'],
+    '  Stability Score': f"{final_recommendations.iloc[0]['stability_score']:.4f}",
+    '  Annual Savings': f"${final_recommendations.iloc[0]['annual_savings']:.2f}",
+    '  Discount': f"{final_recommendations.iloc[0]['avg_discount']*100:.2f}%"
 }
 
 for key, value in summary_stats.items():
