@@ -8,13 +8,12 @@ Train ML models for CloudOptim ML Server on your MacBook M4 Air 16GB RAM.
 **File**: `mumbai_price_predictor.py`
 - ✅ Complete backtesting on 2025 Q1-Q3 data
 - ✅ Risk & stability scoring for all pools
-- ✅ 5 comprehensive visualizations
+- ✅ 5 comprehensive visualizations (embedded in single file)
 - ✅ Uses 4 instance types: t3.medium, t4g.medium, c5.large, t4g.small
+- ✅ **Single file - no import errors!**
 
 **Quick Start in Jupyter**:
 ```python
-import os
-os.chdir('/path/to/ml-final-v3/new app/ml-server/training')
 %run mumbai_price_predictor.py
 ```
 
@@ -24,7 +23,14 @@ cd "new app/ml-server/training"
 python3 mumbai_price_predictor.py
 ```
 
-See **[VISUALIZATION_GUIDE.md](VISUALIZATION_GUIDE.md)** for complete documentation of all visualizations and metrics.
+**Visualizations Generated**:
+1. Price Prediction Comparison - Model accuracy assessment
+2. Risk & Stability Dashboard - Investment decision matrix
+3. Price Trend Analysis - Temporal patterns
+4. Model Performance Dashboard - Comprehensive metrics (R², MAPE, MAE)
+5. Executive Summary - Key insights and recommendations
+
+All graphs saved to `./outputs/` directory.
 
 ### 2. Generic Model Trainer
 **File**: `train_models.py`
