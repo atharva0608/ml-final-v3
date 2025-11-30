@@ -452,14 +452,14 @@ X_test_scaled = scaler.transform(X_test)
 print("\n🤖 Training XGBoost Price Forecasting Model...")
 
 model_price = xgb.XGBRegressor(
-    n_estimators=300,
+    n_estimators=200,  # Aligned with train_models.py
     max_depth=6,
     learning_rate=0.05,
     subsample=0.8,
     colsample_bytree=0.8,
     random_state=42,
     n_jobs=-1,
-    tree_method='hist'  # Faster on M4
+    tree_method='hist'  # Faster on M4 Mac
 )
 
 model_price.fit(
@@ -766,13 +766,24 @@ ax3.tick_params(axis='x', rotation=45)
 
 # 3d: Risk vs Savings trade-off
 ax4 = axes[1, 1]
+
+# Merge on all three keys including risk_category to get matching rows
+merged_risk_savings = pool_risk_scores.merge(
+    savings_by_pool,
+    on=['instance_type', 'availability_zone', 'risk_category'],
+    how='inner'  # Only keep rows that match
+)
+
+# Plot risk vs savings
 scatter = ax4.scatter(
-    pool_risk_scores['risk_score'],
-    pool_risk_scores.merge(savings_by_pool, on=['instance_type', 'availability_zone'])['annual_savings'],
-    c=pool_risk_scores['avg_volatility_7d'],
+    merged_risk_savings['risk_score'],
+    merged_risk_savings['annual_savings'],
+    c=merged_risk_savings['avg_volatility_7d'],
     s=200,
     alpha=0.7,
-    cmap='RdYlGn_r'
+    cmap='RdYlGn_r',
+    edgecolors='black',
+    linewidth=0.5
 )
 
 ax4.set_xlabel('Risk Score (0=safe, 1=risky)', fontsize=11)
@@ -780,7 +791,7 @@ ax4.set_ylabel('Annual Savings (USD)', fontsize=11)
 ax4.set_title('Risk vs Savings Trade-off', fontsize=12, fontweight='bold')
 ax4.grid(True, alpha=0.3)
 cbar = plt.colorbar(scatter, ax=ax4)
-cbar.set_label('Volatility', fontsize=10)
+cbar.set_label('Volatility (7d)', fontsize=10)
 
 plt.tight_layout()
 plt.show()
