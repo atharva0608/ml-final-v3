@@ -1,0 +1,23 @@
+# CloudOptim ML Training Requirements
+# Compatible with MacBook M4 Air 16GB RAM
+
+# Core ML libraries
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+lightgbm>=4.0.0
+
+# Data processing
+scipy>=1.11.0
+
+# Progress bars
+tqdm>=4.66.0
+
+# Optional: Deep learning (for advanced models)
+# tensorflow-macos>=2.13.0  # For M4 Mac
+# torch>=2.0.0  # PyTorch
+
+# Visualization (for analysis)
+matplotlib>=3.7.0
+seaborn>=0.12.0

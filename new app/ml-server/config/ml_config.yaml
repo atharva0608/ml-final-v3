@@ -36,6 +36,7 @@ models:
 decision_engines:
   upload_dir: "/opt/ml-server/decision_engine/uploaded"
   active_engines:
+    # Core CAST AI compatible engines
     spot_optimizer: "spot_optimizer_v1"
     bin_packing: "bin_packing_v1"
     rightsizing: "rightsizing_v1"
@@ -44,6 +45,33 @@ decision_engines:
     volume_cleanup: "volume_cleanup_v1"
     network_optimizer: "network_optimizer_v1"
     oomkilled_remediation: "oomkilled_v1"
+    # Advanced feature engines (can be toggled via frontend)
+    ipv4_cost_tracker: "ipv4_tracker_v1"
+    image_bloat_analyzer: "image_bloat_v1"
+    shadow_it_tracker: "shadow_it_v1"
+    noisy_neighbor_detector: "noisy_neighbor_v1"
+
+  # Feature toggles (enable/disable via frontend)
+  feature_toggles:
+    ipv4_cost_tracking:
+      enabled: true
+      description: "Track IPv4 public IP costs (AWS charges $0.005/hr since Feb 2024)"
+      auto_scan_interval_hours: 24
+    image_bloat_analysis:
+      enabled: true
+      description: "Analyze container image sizes and calculate bloat tax"
+      auto_scan_interval_hours: 168  # Weekly
+      bloat_threshold_mb: 500
+    shadow_it_detection:
+      enabled: true
+      description: "Detect AWS resources not managed by Kubernetes"
+      auto_scan_interval_hours: 24
+      min_age_days: 7
+    noisy_neighbor_detection:
+      enabled: true
+      description: "Detect pods causing excessive network traffic"
+      auto_scan_interval_hours: 6
+      bandwidth_outlier_multiplier: 10
 
 gap_filler:
   enabled: true
