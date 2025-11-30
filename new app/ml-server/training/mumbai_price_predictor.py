@@ -742,298 +742,64 @@ def calculate_savings_analysis(df, pool_scores):
 df_test_analysis, savings_by_pool = calculate_savings_analysis(df_test, pool_risk_scores)
 
 # ============================================================================
-# VISUALIZATION - COMPREHENSIVE GRAPHS
+# VISUALIZATION - COMPREHENSIVE GRAPHS WITH CLEAR INSIGHTS
 # ============================================================================
 
 print("\n" + "="*80)
-print("7. GENERATING VISUALIZATIONS")
+print("7. GENERATING ENHANCED VISUALIZATIONS")
 print("="*80)
 
-# Figure 1: Predicted vs Actual Prices (All Pools)
-print("\n📈 1. Predicted vs Actual Prices...")
-
-fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-fig.suptitle('Predicted vs Actual Spot Prices - All Instance Types (Mumbai 2025)', fontsize=16, fontweight='bold')
-
-for idx, instance_type in enumerate(CONFIG['instance_types']):
-    ax = axes[idx // 2, idx % 2]
-
-    # Filter data for this instance type
-    df_inst = df_test_analysis[df_test_analysis['instance_type'] == instance_type]
-
-    # Sample data for visualization (every 60th point = every 10 hours)
-    df_sample = df_inst.iloc[::60]
-
-    # Plot
-    ax.plot(df_sample['timestamp'], df_sample['target_price_1h'],
-            label='Actual Price', linewidth=2, alpha=0.8)
-    ax.plot(df_sample['timestamp'], df_sample['predicted_price_1h'],
-            label='Predicted Price (1h ahead)', linewidth=2, alpha=0.8, linestyle='--')
-
-    ax.set_title(f'{instance_type}', fontsize=14, fontweight='bold')
-    ax.set_xlabel('Date')
-    ax.set_ylabel('Spot Price (USD/hour)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    ax.tick_params(axis='x', rotation=45)
-
-plt.tight_layout()
-plt.show()
-print("  ✓ Displayed")
-
-# Figure 2: Risk Scores and Stability
-print("\n📈 2. Risk Scores and Stability...")
-
-fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-
-# Risk score distribution
-ax1 = axes[0]
-for risk_cat in ['SAFE', 'MEDIUM', 'RISKY']:
-    data = pool_risk_scores[pool_risk_scores['risk_category'] == risk_cat]
-    ax1.scatter(data['avg_spot_price'], data['risk_score'],
-               label=risk_cat, s=200, alpha=0.7)
-
-ax1.set_xlabel('Average Spot Price (USD/hour)', fontsize=12)
-ax1.set_ylabel('Risk Score (0=safe, 1=risky)', fontsize=12)
-ax1.set_title('Risk Score vs Spot Price', fontsize=14, fontweight='bold')
-ax1.legend()
-ax1.grid(True, alpha=0.3)
-
-# Stability score by instance type
-ax2 = axes[1]
-pool_risk_scores_sorted = pool_risk_scores.sort_values('stability_score', ascending=False)
-x_pos = np.arange(len(pool_risk_scores_sorted))
-colors = pool_risk_scores_sorted['risk_category'].map({'SAFE': 'green', 'MEDIUM': 'orange', 'RISKY': 'red'})
-
-ax2.barh(x_pos, pool_risk_scores_sorted['stability_score'], color=colors, alpha=0.7)
-ax2.set_yticks(x_pos)
-ax2.set_yticklabels([f"{row['instance_type']} ({row['availability_zone']})"
-                      for _, row in pool_risk_scores_sorted.iterrows()], fontsize=9)
-ax2.set_xlabel('Stability Score (0=unstable, 1=stable)', fontsize=12)
-ax2.set_title('Pool Stability Ranking', fontsize=14, fontweight='bold')
-ax2.grid(True, alpha=0.3, axis='x')
-
-plt.tight_layout()
-plt.show()
-print("  ✓ Displayed")
-
-# Figure 3: Savings Analysis
-print("\n📈 3. Savings Analysis...")
-
-fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-fig.suptitle('Savings Analysis - Mumbai 2025', fontsize=16, fontweight='bold')
-
-# 3a: Annual savings by pool
-ax1 = axes[0, 0]
-savings_sorted = savings_by_pool.sort_values('annual_savings', ascending=False)
-x_pos = np.arange(len(savings_sorted))
-colors_risk = savings_sorted['risk_category'].map({'SAFE': 'green', 'MEDIUM': 'orange', 'RISKY': 'red'})
-
-ax1.barh(x_pos, savings_sorted['annual_savings'], color=colors_risk, alpha=0.7)
-ax1.set_yticks(x_pos)
-ax1.set_yticklabels([f"{row['instance_type']} ({row['availability_zone']})"
-                      for _, row in savings_sorted.iterrows()], fontsize=9)
-ax1.set_xlabel('Annual Savings (USD)', fontsize=11)
-ax1.set_title('Annual Savings by Pool', fontsize=12, fontweight='bold')
-ax1.grid(True, alpha=0.3, axis='x')
-
-# 3b: Discount percentage vs risk
-ax2 = axes[0, 1]
-for risk_cat in ['SAFE', 'MEDIUM', 'RISKY']:
-    data = savings_by_pool[savings_by_pool['risk_category'] == risk_cat]
-    ax2.scatter(data['discount'] * 100, data['annual_savings'],
-               label=risk_cat, s=200, alpha=0.7)
-
-ax2.set_xlabel('Average Discount (%)', fontsize=11)
-ax2.set_ylabel('Annual Savings (USD)', fontsize=11)
-ax2.set_title('Discount vs Savings by Risk Category', fontsize=12, fontweight='bold')
-ax2.legend()
-ax2.grid(True, alpha=0.3)
-
-# 3c: Savings over time (monthly)
-ax3 = axes[1, 0]
-df_test_analysis['year_month'] = df_test_analysis['timestamp'].dt.to_period('M')
-monthly_savings = df_test_analysis.groupby(['year_month', 'instance_type']).agg({
-    'monthly_savings': 'mean'
-}).reset_index()
-
-for instance_type in CONFIG['instance_types']:
-    data = monthly_savings[monthly_savings['instance_type'] == instance_type]
-    ax3.plot(data['year_month'].astype(str), data['monthly_savings'],
-            label=instance_type, marker='o', linewidth=2)
-
-ax3.set_xlabel('Month', fontsize=11)
-ax3.set_ylabel('Average Monthly Savings (USD)', fontsize=11)
-ax3.set_title('Monthly Savings Trend', fontsize=12, fontweight='bold')
-ax3.legend()
-ax3.grid(True, alpha=0.3)
-ax3.tick_params(axis='x', rotation=45)
-
-# 3d: Risk vs Savings trade-off
-ax4 = axes[1, 1]
-
-# Merge pool risk scores with savings (now both have unique pools, no duplicate risk_category)
-merged_risk_savings = pool_risk_scores.merge(
-    savings_by_pool[['instance_type', 'availability_zone', 'annual_savings']],
-    on=['instance_type', 'availability_zone'],
-    how='inner'  # Only keep rows that match
+# Import enhanced visualization module
+from visualization_insights import (
+    create_price_prediction_comparison,
+    create_risk_stability_dashboard,
+    create_price_trend_analysis,
+    create_model_performance_dashboard,
+    create_summary_insights
 )
 
-# Plot risk vs savings
-scatter = ax4.scatter(
-    merged_risk_savings['risk_score'],
-    merged_risk_savings['annual_savings'],
-    c=merged_risk_savings['avg_volatility_7d'],
-    s=200,
-    alpha=0.7,
-    cmap='RdYlGn_r',
-    edgecolors='black',
-    linewidth=0.5
-)
-
-# Add labels for each point
-for idx, row in merged_risk_savings.iterrows():
-    ax4.annotate(
-        f"{row['instance_type']}\n{row['availability_zone'][-1]}",  # Just AZ letter (a/b/c)
-        (row['risk_score'], row['annual_savings']),
-        fontsize=7,
-        ha='center',
-        alpha=0.7
-    )
-
-ax4.set_xlabel('Risk Score (0=safe, 1=risky)', fontsize=11)
-ax4.set_ylabel('Annual Savings (USD)', fontsize=11)
-ax4.set_title('Risk vs Savings Trade-off', fontsize=12, fontweight='bold')
-ax4.grid(True, alpha=0.3)
-cbar = plt.colorbar(scatter, ax=ax4)
-cbar.set_label('Volatility (7d)', fontsize=10)
-
-plt.tight_layout()
+# Figure 1: Price Prediction Comparison with Insights
+print("\n📈 1. Price Prediction Analysis (Top 4 Pools)...")
+fig1 = create_price_prediction_comparison(df_test_analysis, pool_risk_scores)
+output_path = Path(CONFIG['output_dir']) / 'price_prediction_comparison.png'
+fig1.savefig(output_path, dpi=300, bbox_inches='tight')
 plt.show()
-print("  ✓ Displayed")
+print(f"  ✓ Displayed and saved to: {output_path}")
 
-# Figure 4: Model Performance
-print("\n📈 4. Model Performance Analysis...")
-
-fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-fig.suptitle('Price Forecasting Model Performance', fontsize=16, fontweight='bold')
-
-# 4a: Actual vs Predicted scatter
-ax1 = axes[0, 0]
-sample_size = min(5000, len(y_test))
-indices = np.random.choice(len(y_test), sample_size, replace=False)
-
-ax1.scatter(y_test[indices], y_pred_test[indices], alpha=0.5, s=10)
-ax1.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()],
-         'r--', linewidth=2, label='Perfect Prediction')
-ax1.set_xlabel('Actual Price (USD)', fontsize=11)
-ax1.set_ylabel('Predicted Price (USD)', fontsize=11)
-ax1.set_title(f'Actual vs Predicted (R²={metrics["test_r2"]:.4f})', fontsize=12, fontweight='bold')
-ax1.legend()
-ax1.grid(True, alpha=0.3)
-
-# 4b: Prediction error distribution
-ax2 = axes[0, 1]
-errors = df_test_analysis['prediction_error_pct'].dropna()
-ax2.hist(errors, bins=50, alpha=0.7, edgecolor='black')
-ax2.axvline(x=0, color='r', linestyle='--', linewidth=2, label='Zero Error')
-ax2.axvline(x=errors.median(), color='g', linestyle='--', linewidth=2, label=f'Median: {errors.median():.2f}%')
-ax2.set_xlabel('Prediction Error (%)', fontsize=11)
-ax2.set_ylabel('Frequency', fontsize=11)
-ax2.set_title(f'Prediction Error Distribution (MAPE={metrics["test_mape"]:.2f}%)', fontsize=12, fontweight='bold')
-ax2.legend()
-ax2.grid(True, alpha=0.3)
-
-# 4c: Error by instance type
-ax3 = axes[1, 0]
-error_by_type = df_test_analysis.groupby('instance_type')['prediction_error_pct'].apply(
-    lambda x: np.abs(x).mean()
-)
-ax3.bar(error_by_type.index, error_by_type.values, alpha=0.7, edgecolor='black')
-ax3.set_xlabel('Instance Type', fontsize=11)
-ax3.set_ylabel('Mean Absolute Error (%)', fontsize=11)
-ax3.set_title('Prediction Error by Instance Type', fontsize=12, fontweight='bold')
-ax3.grid(True, alpha=0.3, axis='y')
-
-# 4d: Feature importance (top 20)
-ax4 = axes[1, 1]
-top_features = feature_importance.head(20)
-y_pos = np.arange(len(top_features))
-ax4.barh(y_pos, top_features['importance'], alpha=0.7, edgecolor='black')
-ax4.set_yticks(y_pos)
-ax4.set_yticklabels(top_features['feature'], fontsize=9)
-ax4.set_xlabel('Importance Score', fontsize=11)
-ax4.set_title('Top 20 Feature Importance', fontsize=12, fontweight='bold')
-ax4.grid(True, alpha=0.3, axis='x')
-
-plt.tight_layout()
+# Figure 2: Risk & Stability Dashboard
+print("\n📈 2. Risk & Stability Investment Matrix...")
+fig2 = create_risk_stability_dashboard(pool_risk_scores, savings_by_pool)
+output_path = Path(CONFIG['output_dir']) / 'risk_stability_dashboard.png'
+fig2.savefig(output_path, dpi=300, bbox_inches='tight')
 plt.show()
-print("  ✓ Displayed")
+print(f"  ✓ Displayed and saved to: {output_path}")
 
-# Figure 5: Volatility and Capacity Crush Analysis
-print("\n📈 5. Volatility and Capacity Crush Analysis...")
-
-fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-fig.suptitle('Volatility and Capacity Indicators - Mumbai 2025', fontsize=16, fontweight='bold')
-
-# 5a: Volatility over time
-ax1 = axes[0, 0]
-for instance_type in CONFIG['instance_types']:
-    df_inst = df_test_analysis[df_test_analysis['instance_type'] == instance_type]
-    df_sample = df_inst.iloc[::144]  # Daily samples
-    ax1.plot(df_sample['timestamp'], df_sample['volatility_ratio_24h'],
-            label=instance_type, linewidth=2, alpha=0.8)
-
-ax1.set_xlabel('Date', fontsize=11)
-ax1.set_ylabel('Volatility Ratio (24h)', fontsize=11)
-ax1.set_title('Price Volatility Over Time', fontsize=12, fontweight='bold')
-ax1.legend()
-ax1.grid(True, alpha=0.3)
-ax1.tick_params(axis='x', rotation=45)
-
-# 5b: Capacity crush events (near On-Demand)
-ax2 = axes[0, 1]
-for instance_type in CONFIG['instance_types']:
-    df_inst = df_test_analysis[df_test_analysis['instance_type'] == instance_type]
-    df_sample = df_inst.iloc[::144]  # Daily samples
-    ax2.plot(df_sample['timestamp'], df_sample['near_od_percent_7d'],
-            label=instance_type, linewidth=2, alpha=0.8)
-
-ax2.set_xlabel('Date', fontsize=11)
-ax2.set_ylabel('Near On-Demand % (7d)', fontsize=11)
-ax2.set_title('Capacity Crush Indicator', fontsize=12, fontweight='bold')
-ax2.legend()
-ax2.grid(True, alpha=0.3)
-ax2.tick_params(axis='x', rotation=45)
-
-# 5c: Spike frequency by pool
-ax3 = axes[1, 0]
-spike_by_pool = pool_risk_scores.sort_values('avg_spike_count_7d', ascending=False)
-x_pos = np.arange(len(spike_by_pool))
-ax3.barh(x_pos, spike_by_pool['avg_spike_count_7d'], alpha=0.7, edgecolor='black')
-ax3.set_yticks(x_pos)
-ax3.set_yticklabels([f"{row['instance_type']} ({row['availability_zone']})"
-                      for _, row in spike_by_pool.iterrows()], fontsize=9)
-ax3.set_xlabel('Average Spike Count (7d)', fontsize=11)
-ax3.set_title('Price Spike Frequency by Pool', fontsize=12, fontweight='bold')
-ax3.grid(True, alpha=0.3, axis='x')
-
-# 5d: Volatility vs Discount
-ax4 = axes[1, 1]
-for risk_cat in ['SAFE', 'MEDIUM', 'RISKY']:
-    data = pool_risk_scores[pool_risk_scores['risk_category'] == risk_cat]
-    ax4.scatter(data['avg_volatility_7d'], data['avg_discount'] * 100,
-               label=risk_cat, s=200, alpha=0.7)
-
-ax4.set_xlabel('Average Volatility (7d)', fontsize=11)
-ax4.set_ylabel('Average Discount (%)', fontsize=11)
-ax4.set_title('Volatility vs Discount Trade-off', fontsize=12, fontweight='bold')
-ax4.legend()
-ax4.grid(True, alpha=0.3)
-
-plt.tight_layout()
+# Figure 3: Price Trend Analysis
+print("\n📈 3. Price Trends & Volatility Patterns...")
+fig3 = create_price_trend_analysis(df_test_analysis)
+output_path = Path(CONFIG['output_dir']) / 'price_trend_analysis.png'
+fig3.savefig(output_path, dpi=300, bbox_inches='tight')
 plt.show()
-print("  ✓ Displayed")
+print(f"  ✓ Displayed and saved to: {output_path}")
+
+# Figure 4: Model Performance Dashboard
+print("\n📈 4. Model Performance & Diagnostics...")
+fig4 = create_model_performance_dashboard(metrics, feature_importance, df_test_analysis)
+output_path = Path(CONFIG['output_dir']) / 'model_performance_dashboard.png'
+fig4.savefig(output_path, dpi=300, bbox_inches='tight')
+plt.show()
+print(f"  ✓ Displayed and saved to: {output_path}")
+
+# Figure 5: Executive Summary
+print("\n📈 5. Executive Summary - Key Insights & Recommendations...")
+fig5 = create_summary_insights(pool_risk_scores, savings_by_pool, metrics)
+output_path = Path(CONFIG['output_dir']) / 'executive_summary.png'
+fig5.savefig(output_path, dpi=300, bbox_inches='tight')
+plt.show()
+print(f"  ✓ Displayed and saved to: {output_path}")
+
+print("\n✅ All visualizations generated successfully!")
+print(f"   Saved to: {CONFIG['output_dir']}/")
 
 # ============================================================================
 # FINAL RECOMMENDATIONS
