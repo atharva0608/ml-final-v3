@@ -210,8 +210,11 @@ def create_price_trend_analysis(df_test):
     fig, axes = plt.subplots(2, 2, figsize=(18, 12))
     fig.suptitle('Price Trend & Volatility Analysis - Temporal Patterns', fontsize=16, fontweight='bold')
 
+    # Get unique instance types from the data (up to 4)
+    available_instance_types = sorted(df_test['instance_type'].unique())[:4]
+
     # Group by instance type for analysis
-    for idx, instance_type in enumerate(['m5.large', 'c5.large', 'r5.large', 't3.large']):
+    for idx, instance_type in enumerate(available_instance_types):
         ax = axes.flatten()[idx]
 
         # Filter data
@@ -254,6 +257,10 @@ def create_price_trend_analysis(df_test):
         ax.legend(loc='best', framealpha=0.9)
         ax.grid(True, alpha=0.3)
         ax.tick_params(axis='x', rotation=45)
+
+    # Hide unused subplots if there are fewer than 4 instance types
+    for idx in range(len(available_instance_types), 4):
+        axes.flatten()[idx].axis('off')
 
     plt.tight_layout()
     return fig

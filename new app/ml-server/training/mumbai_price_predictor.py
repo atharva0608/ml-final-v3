@@ -17,6 +17,7 @@ Data: Mumbai region, 2023-2025, 10-minute intervals, 4 instance types
 # IMPORTS
 # ============================================================================
 
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -148,6 +149,12 @@ def standardize_columns(df):
 
     # Drop rows with missing critical data
     df = df.dropna(subset=['spot_price', 'timestamp']).sort_values('timestamp')
+
+    # Drop unnecessary columns that are not used in the model
+    unnecessary_cols = ['sps', 'if', 'sourcefile', 't3', 't2']
+    cols_to_drop = [col for col in unnecessary_cols if col in df.columns]
+    if cols_to_drop:
+        df = df.drop(columns=cols_to_drop)
 
     # Calculate savings if not present
     if 'on_demand_price' in df.columns and 'savings' not in df.columns:
@@ -750,6 +757,11 @@ print("7. GENERATING ENHANCED VISUALIZATIONS")
 print("="*80)
 
 # Import enhanced visualization module
+# Add the training directory to Python path to ensure visualization_insights can be imported
+script_dir = Path(__file__).parent if '__file__' in globals() else Path.cwd()
+if str(script_dir) not in sys.path:
+    sys.path.insert(0, str(script_dir))
+
 from visualization_insights import (
     create_price_prediction_comparison,
     create_risk_stability_dashboard,
