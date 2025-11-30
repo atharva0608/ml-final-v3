@@ -50,8 +50,13 @@ print("="*80)
 # ============================================================================
 
 CONFIG = {
-    # Data paths (ADJUST TO YOUR LOCAL PATHS)
-    'data_dir': './training/data',  # Change this to your data directory
+    # Data paths - YOUR ACTUAL FILE PATHS
+    'training_data': '/Users/atharvapudale/Downloads/aws_2023_2024_complete_24months.csv',
+    'test_q1': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(1-2-3-25).csv',
+    'test_q2': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(4-5-6-25).csv',
+    'test_q3': '/Users/atharvapudale/Downloads/mumbai_spot_data_sorted_asc(7-8-9-25).csv',
+    'event_data': '/Users/atharvapudale/Downloads/aws_stress_events_2023_2025.csv',
+
     'output_dir': './training/outputs',
     'models_dir': './models/uploaded',
 
@@ -79,7 +84,10 @@ CONFIG = {
         'safe': 0.20,      # Bottom 20% risk
         'medium': 0.70,    # Middle 50%
         'risky': 1.00      # Top 30%
-    }
+    },
+
+    # Use actual data (set to False to generate sample data)
+    'use_actual_data': True
 }
 
 # Create output directories
@@ -89,7 +97,11 @@ Path(CONFIG['models_dir']).mkdir(parents=True, exist_ok=True)
 print("\n📁 Configuration:")
 for key, value in CONFIG.items():
     if not isinstance(value, dict):
-        print(f"  {key}: {value}")
+        if isinstance(value, str) and '/' in value:
+            # Show only filename for paths
+            print(f"  {key}: {Path(value).name if Path(value).exists() else value}")
+        else:
+            print(f"  {key}: {value}")
 
 # ============================================================================
 # DATA LOADING & PREPARATION
@@ -99,40 +111,127 @@ print("\n" + "="*80)
 print("1. DATA LOADING")
 print("="*80)
 
+def standardize_columns(df):
+    """Standardize column names to expected format"""
+    df.columns = df.columns.str.lower().str.strip()
+
+    # Column mapping
+    col_map = {}
+    for col in df.columns:
+        if 'time' in col or 'date' in col:
+            col_map[col] = 'timestamp'
+        elif 'spot' in col and 'price' in col:
+            col_map[col] = 'spot_price'
+        elif 'ondemand' in col or 'on_demand' in col or 'on-demand' in col:
+            col_map[col] = 'on_demand_price'
+        elif 'instance' in col and 'type' in col:
+            col_map[col] = 'instance_type'
+        elif col in ['az', 'availability_zone']:
+            col_map[col] = 'availability_zone'
+        elif col in ['region']:
+            col_map[col] = 'region'
+
+    df = df.rename(columns=col_map)
+
+    # Parse timestamp
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+
+    # Parse numeric columns
+    df['spot_price'] = pd.to_numeric(df['spot_price'], errors='coerce')
+    if 'on_demand_price' in df.columns:
+        df['on_demand_price'] = pd.to_numeric(df['on_demand_price'], errors='coerce')
+
+    # Infer region from AZ if missing
+    if 'region' not in df.columns or df['region'].isna().all():
+        if 'availability_zone' in df.columns:
+            df['region'] = df['availability_zone'].str.extract(r'^([a-z]+-[a-z]+-\d+)')[0]
+
+    # Drop rows with missing critical data
+    df = df.dropna(subset=['spot_price', 'timestamp']).sort_values('timestamp')
+
+    # Calculate savings if not present
+    if 'on_demand_price' in df.columns and 'savings' not in df.columns:
+        df['savings'] = ((df['on_demand_price'] - df['spot_price']) / df['on_demand_price']) * 100
+
+    if 'on_demand_price' in df.columns and 'discount' not in df.columns:
+        df['discount'] = df['savings'] / 100
+
+    return df
+
 def load_mumbai_spot_data():
     """
-    Load Mumbai Spot price data
-
-    Expected CSV format:
-    timestamp,instance_type,availability_zone,spot_price,on_demand_price,savings
-
-    If you have different column names, adjust the mapping below.
+    Load Mumbai Spot price data from actual CSV files
     """
-    data_path = Path(CONFIG['data_dir']) / f"spot_prices_{CONFIG['region']}.csv"
-
-    if not data_path.exists():
-        print(f"\n⚠️  Data file not found: {data_path}")
+    if not CONFIG['use_actual_data']:
+        print("\n⚠️  Using sample data mode...")
         print("Creating sample data for demonstration...")
         return generate_sample_mumbai_data()
 
-    print(f"\n📂 Loading data from: {data_path}")
-    df = pd.read_csv(data_path)
+    print("\n📂 Loading ACTUAL Mumbai Spot price data...")
 
-    # Parse timestamp
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    # Load training data (2023-2024)
+    print(f"\n  Loading training data: {Path(CONFIG['training_data']).name}")
+    df_train = pd.read_csv(CONFIG['training_data'])
+    df_train = standardize_columns(df_train)
+
+    # Load test data (Q1, Q2, Q3 2025)
+    test_dfs = []
+    for quarter, path in [('Q1', CONFIG['test_q1']), ('Q2', CONFIG['test_q2']), ('Q3', CONFIG['test_q3'])]:
+        print(f"  Loading test {quarter} 2025: {Path(path).name}")
+        df_q = pd.read_csv(path)
+        df_q = standardize_columns(df_q)
+        test_dfs.append(df_q)
+
+    df_test = pd.concat(test_dfs, ignore_index=True)
+
+    # Combine training and test
+    df = pd.concat([df_train, df_test], ignore_index=True)
 
     # Filter for Mumbai region and selected instance types
+    df = df[df['region'] == CONFIG['region']]
     df = df[df['instance_type'].isin(CONFIG['instance_types'])]
 
     # Sort by timestamp
     df = df.sort_values(['instance_type', 'availability_zone', 'timestamp'])
 
-    print(f"✓ Loaded {len(df):,} records")
+    print(f"\n✓ Loaded {len(df):,} records")
     print(f"  Date range: {df['timestamp'].min()} to {df['timestamp'].max()}")
-    print(f"  Instance types: {df['instance_type'].nunique()}")
-    print(f"  Availability zones: {df['availability_zone'].nunique()}")
+    print(f"  Training period: {len(df[df['timestamp'] <= CONFIG['train_end_date']]):,} records")
+    print(f"  Test period: {len(df[df['timestamp'] > CONFIG['train_end_date']]):,} records")
+    print(f"  Instance types: {sorted(df['instance_type'].unique())}")
+    print(f"  Availability zones: {sorted(df['availability_zone'].unique())}")
+    print(f"  Pools (instance × AZ): {df.groupby(['instance_type', 'availability_zone']).ngroups}")
 
     return df
+
+def load_event_data():
+    """
+    Load AWS stress event data (optional enhancement for feature engineering)
+    """
+    if not Path(CONFIG['event_data']).exists():
+        print("\n⚠️  Event data file not found - skipping event features")
+        return None
+
+    print(f"\n📅 Loading event data: {Path(CONFIG['event_data']).name}")
+    df_events = pd.read_csv(CONFIG['event_data'])
+
+    # Standardize event columns
+    df_events.columns = df_events.columns.str.lower().str.strip()
+    date_col = next((c for c in df_events.columns if 'date' in c), None)
+    name_col = next((c for c in df_events.columns if 'event' in c or 'name' in c), None)
+
+    rename_map = {}
+    if date_col:
+        rename_map[date_col] = 'event_date'
+    if name_col:
+        rename_map[name_col] = 'event_name'
+
+    df_events = df_events.rename(columns=rename_map)
+    df_events['event_date'] = pd.to_datetime(df_events['event_date'], errors='coerce')
+    df_events = df_events.dropna(subset=['event_date'])
+
+    print(f"✓ Loaded {len(df_events)} events")
+    return df_events
 
 def generate_sample_mumbai_data():
     """
@@ -220,8 +319,11 @@ def generate_sample_mumbai_data():
 
     return df
 
-# Load data
+# Load spot price data
 df_raw = load_mumbai_spot_data()
+
+# Load event data (optional)
+df_events = load_event_data() if CONFIG.get('use_actual_data', False) else None
 
 # Display sample
 print("\n📊 Sample data:")
