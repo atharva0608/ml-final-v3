@@ -617,14 +617,17 @@ def calculate_savings_analysis(df, pool_scores):
     df_analysis['monthly_savings'] = df_analysis['hourly_savings'] * 730  # hours/month
     df_analysis['annual_savings'] = df_analysis['monthly_savings'] * 12
 
-    # Aggregate by pool
-    savings_by_pool = df_analysis.groupby(['instance_type', 'availability_zone', 'risk_category']).agg({
+    # Aggregate by pool (risk_category is preserved since it's constant per pool)
+    savings_by_pool = df_analysis.groupby(['instance_type', 'availability_zone']).agg({
         'hourly_savings': 'mean',
         'monthly_savings': 'mean',
         'annual_savings': 'mean',
         'discount': 'mean',
         'spot_price': 'mean',
-        'on_demand_price': 'first'
+        'on_demand_price': 'first',
+        'risk_category': 'first',  # All rows for a pool have the same risk_category
+        'risk_score': 'first',
+        'stability_score': 'first'
     }).reset_index()
 
     savings_by_pool = savings_by_pool.sort_values('annual_savings', ascending=False)
@@ -767,10 +770,10 @@ ax3.tick_params(axis='x', rotation=45)
 # 3d: Risk vs Savings trade-off
 ax4 = axes[1, 1]
 
-# Merge on all three keys including risk_category to get matching rows
+# Merge pool risk scores with savings (now both have unique pools, no duplicate risk_category)
 merged_risk_savings = pool_risk_scores.merge(
-    savings_by_pool,
-    on=['instance_type', 'availability_zone', 'risk_category'],
+    savings_by_pool[['instance_type', 'availability_zone', 'annual_savings']],
+    on=['instance_type', 'availability_zone'],
     how='inner'  # Only keep rows that match
 )
 
@@ -785,6 +788,16 @@ scatter = ax4.scatter(
     edgecolors='black',
     linewidth=0.5
 )
+
+# Add labels for each point
+for idx, row in merged_risk_savings.iterrows():
+    ax4.annotate(
+        f"{row['instance_type']}\n{row['availability_zone'][-1]}",  # Just AZ letter (a/b/c)
+        (row['risk_score'], row['annual_savings']),
+        fontsize=7,
+        ha='center',
+        alpha=0.7
+    )
 
 ax4.set_xlabel('Risk Score (0=safe, 1=risky)', fontsize=11)
 ax4.set_ylabel('Annual Savings (USD)', fontsize=11)
