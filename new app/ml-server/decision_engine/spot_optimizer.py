@@ -1,24 +1,37 @@
 """
 Spot Optimizer Engine
 
-Select optimal Spot instances using AWS Spot Advisor data (NOT SPS scores)
+Select optimal Spot instances using AWS Spot Advisor data + Customer Feedback
 
 Data Sources:
 - AWS Spot Advisor JSON: https://spot-bid-advisor.s3.amazonaws.com/spot-advisor-data.json
 - Historical Spot prices from database
 - On-Demand prices from database
+- Customer interruption feedback (risk_score_adjustments table)
 
-Risk Score Formula (0.0 = unsafe, 1.0 = safe):
-  Risk Score = (0.60 × Public_Rate_Score) +
-               (0.25 × Volatility_Score) +
-               (0.10 × Gap_Score) +
-               (0.05 × Time_Score)
+Risk Score Formula (ADAPTIVE - 0.0 = unsafe, 1.0 = safe):
+
+  Month 1-3 (0% customer weight):
+    Risk Score = (0.60 × AWS_Spot_Advisor_Score) +
+                 (0.30 × Volatility_Score) +
+                 (0.10 × Structural_Score)
+
+  Month 12+ (25% customer weight):
+    Risk Score = (0.35 × AWS_Spot_Advisor_Score) +
+                 (0.30 × Volatility_Score) +
+                 (0.25 × Customer_Feedback_Score) +
+                 (0.10 × Structural_Score)
+
+Customer feedback weight grows from 0% → 25% over 12 months based on
+data maturity (total instance-hours observed). This creates competitive moat.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from decimal import Decimal
 from datetime import datetime
 import logging
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from .base_engine import BaseDecisionEngine
 
@@ -33,8 +46,9 @@ class SpotOptimizerEngine(BaseDecisionEngine):
     with lowest interruption risk and highest savings potential.
     """
 
-    def __init__(self, config: Dict[str, Any] = None):
+    def __init__(self, config: Dict[str, Any] = None, db: Optional[AsyncSession] = None):
         super().__init__(config)
+        self.db = db  # Database session for customer feedback queries
         self.interruption_rate_scores = {
             "<5%": 1.0,
             "5-10%": 0.8,
@@ -42,6 +56,7 @@ class SpotOptimizerEngine(BaseDecisionEngine):
             "15-20%": 0.4,
             ">20%": 0.2
         }
+        self._customer_feedback_weight = None  # Cached weight
 
     def decide(
         self,
@@ -172,38 +187,195 @@ class SpotOptimizerEngine(BaseDecisionEngine):
 
         return filtered
 
-    def _calculate_risk_score(self, instance: Dict[str, Any]) -> float:
+    async def _calculate_risk_score(self, instance: Dict[str, Any], region: str, availability_zone: str = None) -> float:
         """
-        Calculate risk score using AWS Spot Advisor data
+        Calculate ADAPTIVE risk score using AWS Spot Advisor + Customer Feedback
 
-        Risk Score = (0.60 × Public_Rate_Score) +
-                     (0.25 × Volatility_Score) +
-                     (0.10 × Gap_Score) +
-                     (0.05 × Time_Score)
+        New Formula (Adaptive):
+          Risk Score = ((0.60 - customer_weight) × AWS_Spot_Advisor_Score) +
+                       ((0.30 - customer_weight) × Volatility_Score) +
+                       (customer_weight × Customer_Feedback_Score) +
+                       (0.10 × Structural_Score)
+
+        Customer weight grows from 0% (Month 1) to 25% (Month 12+)
+
+        Month 1: Risk = 60% AWS + 30% Volatility + 10% Structural
+        Month 12: Risk = 35% AWS + 30% Volatility + 25% Customer + 10% Structural
+
+        Args:
+            instance: Instance data with type, prices, interruption rate
+            region: AWS region (e.g., 'us-east-1')
+            availability_zone: Optional AZ (e.g., 'us-east-1a')
+
+        Returns:
+            Risk score (0.0-1.0, higher = safer)
         """
-        # Public rate score (from Spot Advisor)
+        instance_type = instance.get("type")
+
+        # Component 1: AWS Spot Advisor score (baseline)
         interruption_rate = instance.get("interruption_rate", "15-20%")
-        public_rate_score = self.interruption_rate_scores.get(interruption_rate, 0.5)
+        aws_spot_advisor_score = self.interruption_rate_scores.get(interruption_rate, 0.5)
 
-        # Volatility score (placeholder - calculate from price history)
-        volatility_score = 0.85  # TODO: Calculate from historical prices
+        # Component 2: Volatility score (price stability)
+        volatility_score = 0.85  # TODO: Calculate from historical price data
 
-        # Gap score (current price vs On-Demand)
+        # Component 3: Structural score (gap + time factors)
         spot_price = instance.get("spot_price", 0.05)
         od_price = instance.get("od_price", 0.1)
         gap_score = 1.0 - (spot_price / od_price) if od_price > 0 else 0.5
 
-        # Time score (placeholder - check current hour)
-        time_score = 0.9  # TODO: Check if off-peak hours
+        time_score = self._get_time_score()  # Off-peak = higher score
+        structural_score = (0.7 * gap_score) + (0.3 * time_score)
 
-        risk_score = (
-            0.60 * public_rate_score +
-            0.25 * volatility_score +
-            0.10 * gap_score +
-            0.05 * time_score
+        # Component 4: Customer Feedback score (ADAPTIVE - grows over time)
+        customer_feedback_score = aws_spot_advisor_score  # Default fallback
+        customer_weight = await self._get_customer_feedback_weight()
+
+        if self.db and customer_weight > 0:
+            # Query risk_score_adjustments table for learned risk score
+            learned_score = await self._get_learned_risk_score(
+                instance_type=instance_type,
+                region=region,
+                availability_zone=availability_zone or f"{region}a"  # Default AZ
+            )
+
+            if learned_score is not None:
+                customer_feedback_score = float(learned_score)
+                logger.debug(
+                    f"Using learned risk score for {instance_type}:{region}: "
+                    f"base={aws_spot_advisor_score:.3f}, learned={customer_feedback_score:.3f}, "
+                    f"weight={customer_weight:.2%}"
+                )
+
+        # Calculate final adaptive risk score
+        final_risk_score = (
+            (0.60 - customer_weight) * aws_spot_advisor_score +
+            (0.30 - customer_weight) * volatility_score +
+            customer_weight * customer_feedback_score +
+            0.10 * structural_score
         )
 
-        return round(risk_score, 4)
+        # Ensure score is in valid range
+        final_risk_score = max(0.0, min(1.0, final_risk_score))
+
+        logger.debug(
+            f"Risk score for {instance_type}: {final_risk_score:.4f} "
+            f"(AWS={aws_spot_advisor_score:.2f}, Volatility={volatility_score:.2f}, "
+            f"Customer={customer_feedback_score:.2f} @{customer_weight:.2%}, "
+            f"Structural={structural_score:.2f})"
+        )
+
+        return round(final_risk_score, 4)
+
+    def _get_time_score(self) -> float:
+        """
+        Calculate time-based risk score (off-peak hours = safer)
+
+        Peak hours (9 AM - 6 PM weekdays): Lower score (0.7)
+        Off-peak hours (nights/weekends): Higher score (0.95)
+        """
+        now = datetime.utcnow()
+        hour = now.hour
+        day_of_week = now.weekday()  # 0=Monday, 6=Sunday
+
+        # Weekend
+        if day_of_week >= 5:
+            return 0.95
+
+        # Weekday night (10 PM - 6 AM)
+        if hour >= 22 or hour <= 6:
+            return 0.90
+
+        # Weekday off-peak (6 AM - 9 AM, 6 PM - 10 PM)
+        if (6 <= hour < 9) or (18 <= hour < 22):
+            return 0.80
+
+        # Weekday peak (9 AM - 6 PM)
+        return 0.70
+
+    async def _get_customer_feedback_weight(self) -> float:
+        """
+        Get current customer feedback weight (0.0 → 0.25)
+
+        Cached for performance (weight doesn't change frequently)
+        """
+        if self._customer_feedback_weight is not None:
+            return self._customer_feedback_weight
+
+        if not self.db:
+            return 0.0  # No database = no customer feedback
+
+        try:
+            # Query PostgreSQL calculate_feedback_weight function
+            result = await self.db.execute(
+                """
+                SELECT calculate_feedback_weight(
+                    (SELECT COALESCE(SUM(total_instance_hours), 0) FROM feedback_learning_stats),
+                    (SELECT COALESCE(SUM(total_interruptions), 0) FROM feedback_learning_stats)
+                )
+                """
+            )
+            weight = result.scalar_one_or_none() or 0.0
+            self._customer_feedback_weight = float(weight)
+
+            logger.info(f"Customer feedback weight: {self._customer_feedback_weight:.2%}")
+            return self._customer_feedback_weight
+
+        except Exception as e:
+            logger.warning(f"Failed to get customer feedback weight: {e}")
+            return 0.0
+
+    async def _get_learned_risk_score(
+        self,
+        instance_type: str,
+        region: str,
+        availability_zone: str
+    ) -> Optional[float]:
+        """
+        Get learned risk score from risk_score_adjustments table
+
+        Returns final_score if available, None otherwise
+        """
+        if not self.db:
+            return None
+
+        try:
+            result = await self.db.execute(
+                """
+                SELECT final_score, confidence, data_points_count
+                FROM risk_score_adjustments
+                WHERE instance_type = :instance_type
+                  AND region = :region
+                  AND availability_zone = :availability_zone
+                  AND confidence >= 0.3
+                ORDER BY confidence DESC, data_points_count DESC
+                LIMIT 1
+                """,
+                {
+                    "instance_type": instance_type,
+                    "region": region,
+                    "availability_zone": availability_zone
+                }
+            )
+
+            row = result.fetchone()
+            if row:
+                final_score = row[0]
+                confidence = row[1]
+                data_points = row[2]
+
+                logger.debug(
+                    f"Found learned risk score for {instance_type}:{availability_zone}: "
+                    f"score={final_score:.4f}, confidence={confidence:.2f}, data_points={data_points}"
+                )
+
+                return float(final_score)
+
+            return None
+
+        except Exception as e:
+            logger.warning(f"Failed to get learned risk score: {e}")
+            return None
 
     def _calculate_savings(self, instance: Dict[str, Any]) -> float:
         """Calculate savings percentage vs On-Demand"""
