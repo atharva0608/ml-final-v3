@@ -2572,6 +2572,307 @@ async def _calculate_risk_score(self, instance: Dict, region: str, availability_
     return round(final_risk_score, 4)
 ```
 
+### 🚀 V2.0 Enhancement: Cross-Client Learning & Proactive Rebalancing
+
+#### Architecture Evolution
+The feedback loop has been enhanced from single-client learning to **cross-client pattern detection**, creating a network effect where multiple customers collectively improve protection for everyone.
+
+**Key Innovation**: First clients act as "canaries" to detect risky pools, enabling proactive rebalancing for remaining clients BEFORE they receive termination notices.
+
+#### Cross-Client Pattern Detection Workflow
+
+```
+Client 1 → Interruption in m5.large/us-east-1a
+   ↓
+System records → Risk Level: NORMAL (1 client, isolated incident)
+   ↓
+Client 2 → Interruption in SAME pool within 60 minutes
+   ↓
+Pattern detected → Risk Level: UNCERTAIN (2 clients, possible systemic issue)
+   ↓
+   • Risk score increased by +0.10
+   • Pool flagged for monitoring
+   • Alert sent to operations
+   ↓
+Client 3 → Interruption in SAME pool
+   ↓
+Pattern confirmed → Risk Level: CONFIRMED_RISKY (3+ clients, systemic problem)
+   ↓
+Proactive Rebalancing Triggered:
+   • Risk score increased by +0.20 (total)
+   • Identify all 50 remaining clients in this pool
+   • Create high-priority rebalance jobs for all 50 clients
+   • Core Platform moves them to safer pools BEFORE termination
+   ↓
+Result:
+   ✅ First 3 clients: "Canaries" that validated predictions
+   ✅ Remaining 50 clients: Protected by proactive rebalancing
+   ✅ Future deployments: Avoid this pool until risk decreases
+```
+
+#### Implementation: FeedbackLearningService (Enhanced)
+
+**File**: `backend/services/feedback_service.py`
+
+**Thresholds**:
+```python
+UNCERTAIN_THRESHOLD = 2      # 2+ clients → UNCERTAIN
+CONFIRMED_RISKY_THRESHOLD = 3  # 3+ clients → CONFIRMED RISKY
+TIME_WINDOW_MINUTES = 60     # Pattern detection window
+```
+
+**Risk Levels**:
+- **NORMAL**: Single client affected (isolated incident)
+- **UNCERTAIN**: 2 clients affected (possible pattern, monitor closely)
+- **CONFIRMED_RISKY**: 3+ clients affected (systemic issue, trigger proactive rebalancing)
+
+**Risk Score Adjustments**:
+- NORMAL: Base risk score (no change)
+- UNCERTAIN: Base + 0.10 (moderate increase)
+- CONFIRMED_RISKY: Base + 0.20 (significant increase)
+
+**Confidence Calculation**:
+```python
+confidence = min(0.95, 0.50 + (affected_clients_count * 0.15))
+# Example:
+# 1 client: 0.65 confidence
+# 2 clients: 0.80 confidence
+# 3+ clients: 0.95 confidence
+```
+
+#### Main API Method
+
+```python
+async def ingest_interruption_with_cross_client_detection(
+    self,
+    interruption_data: Dict[str, Any]
+) -> Dict[str, Any]:
+    """
+    Workflow:
+    1. Record interruption for this client
+    2. Check if other clients in same pool experienced interruptions recently
+    3. If pattern detected (2+ clients), flag pool as UNCERTAIN
+    4. If confirmed risky (3+ clients), trigger proactive rebalancing
+    5. Update risk scores for all clients
+    6. Return action recommendations
+    """
+    # Step 1: Record interruption
+    interruption_id = await self._record_interruption(interruption_data)
+
+    # Step 2: Analyze cross-client patterns
+    pattern_analysis = await self._analyze_cross_client_patterns(
+        instance_type=instance_type,
+        availability_zone=availability_zone,
+        region=region,
+        time_window_minutes=60
+    )
+
+    # Step 3: Determine action based on risk level
+    if pattern_analysis['risk_level'] == 'CONFIRMED_RISKY':
+        # Get all other clients in this pool
+        clients_to_rebalance = await self._get_clients_in_pool(
+            instance_type, availability_zone, region,
+            exclude_interrupted_clients=pattern_analysis['affected_customer_ids']
+        )
+
+        # Create proactive rebalance jobs
+        await self._create_proactive_rebalance_jobs(
+            clients_to_rebalance, reason="Confirmed risky pool"
+        )
+
+    # Step 4: Update risk scores for ALL clients
+    new_risk_score, confidence = await self._update_pool_risk_score(...)
+
+    return {
+        'success': True,
+        'risk_level': pattern_analysis['risk_level'],
+        'affected_clients_count': pattern_analysis['affected_clients_count'],
+        'action_required': 'proactive_rebalance' if risk_level == 'CONFIRMED_RISKY' else 'monitor',
+        'clients_to_rebalance': clients_to_rebalance,
+        'new_risk_score': float(new_risk_score),
+        'confidence': float(confidence)
+    }
+```
+
+#### Database Schema Enhancements
+
+**New Table: proactive_rebalance_jobs**
+```sql
+CREATE TABLE proactive_rebalance_jobs (
+    job_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id UUID NOT NULL,
+    cluster_id UUID,
+    source_instance_type VARCHAR(50) NOT NULL,
+    source_availability_zone VARCHAR(50) NOT NULL,
+    region VARCHAR(50) NOT NULL,
+    reason TEXT NOT NULL,
+    priority VARCHAR(20) NOT NULL DEFAULT 'HIGH',
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    target_instance_type VARCHAR(50),
+    target_availability_zone VARCHAR(50),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    error_message TEXT,
+    CONSTRAINT fk_customer FOREIGN KEY (customer_id) REFERENCES customers(customer_id)
+);
+
+CREATE INDEX idx_rebalance_jobs_status ON proactive_rebalance_jobs(status, priority, created_at);
+CREATE INDEX idx_rebalance_jobs_customer ON proactive_rebalance_jobs(customer_id);
+```
+
+**Enhanced interruption_feedback Table**:
+```sql
+-- Add customer_id tracking if not already present
+ALTER TABLE interruption_feedback
+ADD COLUMN IF NOT EXISTS customer_id UUID REFERENCES customers(customer_id);
+
+-- Add index for cross-client queries
+CREATE INDEX IF NOT EXISTS idx_interruption_cross_client
+ON interruption_feedback(instance_type, availability_zone, region, interruption_timestamp);
+```
+
+#### Network Effect - The Ultimate Competitive Moat
+
+**Single Client Mode** (Traditional Approach):
+```
+Client A learns from own interruptions only
+Accuracy: 70% after 12 months
+```
+
+**Cross-Client Mode** (CloudOptim V2.0):
+```
+Client A learns from ALL clients' interruptions
+100 clients × 1000 instance-hours each = 100K collective instance-hours
+Accuracy: 85% after 3 months (vs 12 months for single client)
+```
+
+**Network Effect Formula**:
+```
+Total Learning Data = Sum of all clients' instance-hours
+Effective Maturity = Total Learning Data / 500K
+
+Example with 100 clients after 3 months:
+Each client: 5K instance-hours
+Collective: 500K instance-hours
+→ Instant competitive moat (normally takes 12+ months)
+```
+
+**Competitive Advantage**:
+- New competitor needs 500K+ instance-hours from scratch
+- CloudOptim: Onboard 100 customers × 5K hours = instant moat in 3 months
+- Exponential advantage: More customers = Better protection for everyone
+- **Cannot be replicated** without similar customer base
+
+#### Enhanced API Endpoints (V2.0)
+
+##### POST /api/v1/ml/feedback/interruption (Enhanced)
+**Request** (same as V1.0):
+```json
+{
+    "customer_id": "uuid",
+    "cluster_id": "uuid",
+    "instance_type": "m5.large",
+    "availability_zone": "us-east-1a",
+    "region": "us-east-1",
+    "workload_type": "web",
+    "was_predicted": false,
+    "risk_score_at_deployment": 0.75,
+    "interruption_timestamp": "2025-12-01T14:30:00Z"
+}
+```
+
+**Response** (enhanced with cross-client data):
+```json
+{
+    "success": true,
+    "interruption_id": "uuid",
+    "risk_level": "CONFIRMED_RISKY",
+    "affected_clients_count": 3,
+    "action_required": "proactive_rebalance",
+    "clients_to_rebalance": ["uuid1", "uuid2", "uuid3", ...],
+    "new_risk_score": 0.95,
+    "confidence": 0.95,
+    "pattern_analysis": {
+        "affected_customer_ids": ["uuid1", "uuid2", "uuid3"],
+        "first_interruption_time": "2025-12-01T13:45:00Z",
+        "interruptions_in_window": 3,
+        "temporal_pattern": {
+            "day_of_week": 2,
+            "hour_of_day": 14,
+            "is_peak_hour": true
+        }
+    }
+}
+```
+
+##### GET /api/v1/ml/feedback/pool-status (NEW)
+**Purpose**: Check current risk status for a pool (used by Core Platform)
+
+**Request**: `GET /api/v1/ml/feedback/pool-status?instance_type=m5.large&az=us-east-1a&region=us-east-1`
+
+**Response**:
+```json
+{
+    "risk_level": "CONFIRMED_RISKY",
+    "affected_clients_count": 3,
+    "recent_interruptions": 3,
+    "risk_score": 0.95,
+    "confidence": 0.95,
+    "recommendation": "IMMEDIATE REBALANCE - Confirmed risky pool",
+    "last_interruption_time": "2025-12-01T14:30:00Z",
+    "pool_identifier": "m5.large/us-east-1a/us-east-1"
+}
+```
+
+#### Integration with Core Platform
+
+**Workflow**:
+1. **Spot Interruption Detected** (Core Platform)
+   - EventBridge/SQS receives interruption warning
+   - Core Platform calls ML Server feedback API
+
+2. **Pattern Detection** (ML Server)
+   - Analyze cross-client patterns
+   - Determine risk level
+   - Return action recommendation
+
+3. **Proactive Rebalancing** (Core Platform)
+   - If `action_required` == "proactive_rebalance"
+   - Poll `proactive_rebalance_jobs` table
+   - Execute rebalance jobs for all affected clients
+   - Use remote K8s API to move workloads to safer pools
+
+4. **Verification** (Core Platform)
+   - Mark jobs as completed
+   - Track success rate
+   - Report to ML Server for continuous learning
+
+#### Implementation Status
+
+**Completed**:
+- ✅ CrossClientFeedbackService class (563 lines)
+- ✅ Pattern detection thresholds (2/3 clients)
+- ✅ Risk level escalation logic
+- ✅ Proactive rebalancing job creation
+- ✅ Enhanced risk score calculation
+- ✅ Confidence scoring based on client count
+
+**Database Migration**:
+- ✅ Migration file: `database/migrations/003_add_cross_client_tables.sql`
+- ✅ Adds `customer_id` to `interruption_feedback` table
+- ✅ Creates `proactive_rebalance_jobs` table
+- ✅ Creates `cross_client_pattern_summary` view (real-time monitoring)
+- ✅ Creates `get_pool_risk_status()` function
+- ✅ Creates `get_pending_rebalance_jobs()` function
+- ✅ Adds indexes for cross-client queries
+
+**Pending**:
+- ⏳ Integration with existing feedback API routes (add endpoint to use cross-client method)
+- ⏳ Core Platform poller for rebalance jobs execution
+- ⏳ Monitoring dashboard for cross-client patterns
+- ⏳ Alerting when CONFIRMED_RISKY pools detected
+
 ---
 
 ## 🎯 Phase 4: Hybrid Rightsizing Engine

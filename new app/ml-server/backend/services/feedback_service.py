@@ -639,3 +639,535 @@ class FeedbackLearningService:
             return 'month_3'
         else:
             return 'month_1'
+
+    # ============================================================================
+    # CROSS-CLIENT LEARNING - V2.0 Enhancement
+    # ============================================================================
+
+    # Thresholds for cross-client pattern detection
+    UNCERTAIN_THRESHOLD = 2      # 2+ clients → UNCERTAIN
+    CONFIRMED_RISKY_THRESHOLD = 3  # 3+ clients → CONFIRMED RISKY
+    TIME_WINDOW_MINUTES = 60     # Pattern detection window
+
+    # Risk levels
+    RISK_LEVEL_NORMAL = "NORMAL"
+    RISK_LEVEL_UNCERTAIN = "UNCERTAIN"
+    RISK_LEVEL_CONFIRMED_RISKY = "CONFIRMED_RISKY"
+
+    async def ingest_interruption_with_cross_client_detection(
+        self,
+        interruption_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Enhanced interruption ingestion with cross-client pattern detection
+
+        Workflow:
+        1. Record interruption for this client
+        2. Check if other clients in same pool experienced interruptions recently
+        3. If pattern detected (2+ clients), flag pool as UNCERTAIN
+        4. If confirmed risky (3+ clients), trigger proactive rebalancing
+        5. Update risk scores for all clients
+        6. Return action recommendations
+
+        Args:
+            interruption_data: {
+                'customer_id': UUID,
+                'cluster_id': UUID,
+                'instance_type': str,
+                'availability_zone': str,
+                'region': str,
+                'workload_type': str,
+                'interruption_time': datetime,
+                'was_predicted': bool,
+                'risk_score_at_deployment': Decimal,
+                ...
+            }
+
+        Returns:
+            {
+                'success': bool,
+                'interruption_id': UUID,
+                'risk_level': str,  # NORMAL, UNCERTAIN, CONFIRMED_RISKY
+                'affected_clients_count': int,
+                'action_required': str,  # none, monitor, proactive_rebalance
+                'clients_to_rebalance': List[UUID],
+                'new_risk_score': Decimal,
+                'confidence': Decimal,
+                'pattern_analysis': Dict
+            }
+        """
+        try:
+            customer_id = interruption_data.get('customer_id')
+            instance_type = interruption_data['instance_type']
+            availability_zone = interruption_data['availability_zone']
+            region = interruption_data['region']
+            interruption_time = interruption_data.get('interruption_time', datetime.utcnow())
+
+            # Step 1: Record interruption using existing method
+            base_result = await self.ingest_interruption(interruption_data)
+
+            # Step 2: Analyze cross-client patterns
+            pattern_analysis = await self._analyze_cross_client_patterns(
+                instance_type=instance_type,
+                availability_zone=availability_zone,
+                region=region,
+                time_window_minutes=self.TIME_WINDOW_MINUTES,
+                current_interruption_time=interruption_time
+            )
+
+            affected_clients_count = pattern_analysis['affected_clients_count']
+            risk_level = pattern_analysis['risk_level']
+
+            self.logger.info(
+                f"Cross-client pattern detected: {affected_clients_count} clients affected "
+                f"in {instance_type}/{availability_zone} → Risk Level: {risk_level}"
+            )
+
+            # Step 3: Determine action based on risk level
+            action_required = "none"
+            clients_to_rebalance = []
+
+            if risk_level == self.RISK_LEVEL_UNCERTAIN:
+                action_required = "monitor"
+                self.logger.warning(
+                    f"Pool {instance_type}/{availability_zone} flagged as UNCERTAIN "
+                    f"({affected_clients_count} clients affected)"
+                )
+
+            elif risk_level == self.RISK_LEVEL_CONFIRMED_RISKY:
+                action_required = "proactive_rebalance"
+
+                # Get all other clients in this pool who haven't been interrupted yet
+                clients_to_rebalance = await self._get_clients_in_pool(
+                    instance_type=instance_type,
+                    availability_zone=availability_zone,
+                    region=region,
+                    exclude_interrupted_clients=pattern_analysis['affected_customer_ids']
+                )
+
+                self.logger.critical(
+                    f"Pool {instance_type}/{availability_zone} CONFIRMED RISKY! "
+                    f"({affected_clients_count} clients affected) "
+                    f"→ Triggering proactive rebalancing for {len(clients_to_rebalance)} remaining clients"
+                )
+
+            # Step 4: Update pool risk score based on cross-client data
+            new_risk_score, confidence = await self._update_pool_risk_score_cross_client(
+                instance_type=instance_type,
+                availability_zone=availability_zone,
+                region=region,
+                risk_level=risk_level,
+                affected_clients_count=affected_clients_count
+            )
+
+            # Step 5: If proactive rebalancing needed, create rebalance jobs
+            if action_required == "proactive_rebalance" and clients_to_rebalance:
+                await self._create_proactive_rebalance_jobs(
+                    instance_type=instance_type,
+                    availability_zone=availability_zone,
+                    region=region,
+                    clients_to_rebalance=clients_to_rebalance,
+                    reason=f"Confirmed risky pool ({affected_clients_count} clients interrupted)"
+                )
+
+            return {
+                'success': True,
+                'interruption_id': base_result.get('interruption_id'),
+                'risk_level': risk_level,
+                'affected_clients_count': affected_clients_count,
+                'action_required': action_required,
+                'clients_to_rebalance': clients_to_rebalance,
+                'new_risk_score': float(new_risk_score),
+                'confidence': float(confidence),
+                'pattern_analysis': pattern_analysis
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to ingest interruption with cross-client detection: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+    async def _analyze_cross_client_patterns(
+        self,
+        instance_type: str,
+        availability_zone: str,
+        region: str,
+        time_window_minutes: int,
+        current_interruption_time: datetime
+    ) -> Dict[str, Any]:
+        """
+        Analyze interruption patterns across multiple clients
+
+        Detection Logic:
+        - Count unique customers interrupted in this pool within time window
+        - 1 client = NORMAL (isolated incident)
+        - 2 clients = UNCERTAIN (possible pattern)
+        - 3+ clients = CONFIRMED RISKY (systemic issue)
+
+        Returns:
+            {
+                'affected_clients_count': int,
+                'affected_customer_ids': List[str],
+                'risk_level': str,
+                'first_interruption_time': datetime,
+                'interruptions_in_window': int,
+                'temporal_pattern': Dict
+            }
+        """
+        try:
+            time_window_start = current_interruption_time - timedelta(minutes=time_window_minutes)
+
+            # Query: Get all interruptions in this pool within time window
+            query = """
+                SELECT DISTINCT
+                    customer_id,
+                    interruption_time,
+                    was_predicted,
+                    risk_score_at_deployment
+                FROM interruption_feedback
+                WHERE instance_type = :instance_type
+                  AND availability_zone = :availability_zone
+                  AND region = :region
+                  AND interruption_time >= :time_window_start
+                  AND interruption_time <= :current_time
+                ORDER BY interruption_time ASC
+            """
+
+            result = await self.db.execute(query, {
+                'instance_type': instance_type,
+                'availability_zone': availability_zone,
+                'region': region,
+                'time_window_start': time_window_start,
+                'current_time': current_interruption_time
+            })
+
+            rows = result.fetchall()
+
+            # Extract unique customer IDs
+            affected_customer_ids = list(set([str(row[0]) for row in rows if row[0]]))
+            interruptions_in_window = len(rows)
+            affected_clients_count = len(affected_customer_ids)
+
+            # Determine risk level based on affected clients
+            if affected_clients_count >= self.CONFIRMED_RISKY_THRESHOLD:
+                risk_level = self.RISK_LEVEL_CONFIRMED_RISKY
+            elif affected_clients_count >= self.UNCERTAIN_THRESHOLD:
+                risk_level = self.RISK_LEVEL_UNCERTAIN
+            else:
+                risk_level = self.RISK_LEVEL_NORMAL
+
+            # Analyze temporal patterns
+            temporal_pattern = {
+                'day_of_week': current_interruption_time.weekday(),
+                'hour_of_day': current_interruption_time.hour,
+                'is_peak_hour': 9 <= current_interruption_time.hour <= 17,
+                'is_weekend': current_interruption_time.weekday() >= 5
+            }
+
+            first_interruption_time = rows[0][1] if rows else current_interruption_time
+
+            return {
+                'affected_clients_count': affected_clients_count,
+                'affected_customer_ids': affected_customer_ids,
+                'risk_level': risk_level,
+                'first_interruption_time': first_interruption_time,
+                'interruptions_in_window': interruptions_in_window,
+                'temporal_pattern': temporal_pattern,
+                'pool_identifier': f"{instance_type}/{availability_zone}/{region}"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to analyze cross-client patterns: {e}")
+            # Return safe default
+            return {
+                'affected_clients_count': 1,
+                'affected_customer_ids': [],
+                'risk_level': self.RISK_LEVEL_NORMAL,
+                'first_interruption_time': current_interruption_time,
+                'interruptions_in_window': 1,
+                'temporal_pattern': {},
+                'pool_identifier': f"{instance_type}/{availability_zone}/{region}"
+            }
+
+    async def _get_clients_in_pool(
+        self,
+        instance_type: str,
+        availability_zone: str,
+        region: str,
+        exclude_interrupted_clients: List[str]
+    ) -> List[str]:
+        """
+        Get all clients currently using this pool who haven't been interrupted
+
+        These are the clients we need to proactively rebalance
+
+        Returns:
+            List of customer_ids that need proactive rebalancing
+        """
+        try:
+            # Query to find all active clusters using this instance type + AZ
+            query = """
+                SELECT DISTINCT customer_id
+                FROM cluster_instances
+                WHERE instance_type = :instance_type
+                  AND availability_zone = :availability_zone
+                  AND region = :region
+                  AND status = 'RUNNING'
+            """
+
+            if exclude_interrupted_clients:
+                query += " AND customer_id NOT IN :excluded_ids"
+
+            result = await self.db.execute(query, {
+                'instance_type': instance_type,
+                'availability_zone': availability_zone,
+                'region': region,
+                'excluded_ids': tuple(exclude_interrupted_clients) if exclude_interrupted_clients else ()
+            })
+
+            rows = result.fetchall()
+            return [str(row[0]) for row in rows]
+
+        except Exception as e:
+            self.logger.error(f"Failed to get clients in pool: {e}")
+            return []
+
+    async def _update_pool_risk_score_cross_client(
+        self,
+        instance_type: str,
+        availability_zone: str,
+        region: str,
+        risk_level: str,
+        affected_clients_count: int
+    ) -> tuple[Decimal, Decimal]:
+        """
+        Update risk score for this pool based on cross-client pattern
+
+        Risk Score Adjustment:
+        - NORMAL (1 client): Base risk score (from AWS Spot Advisor)
+        - UNCERTAIN (2 clients): +0.10 risk increase
+        - CONFIRMED RISKY (3+ clients): +0.20 risk increase
+
+        Confidence Adjustment:
+        - More clients affected = Higher confidence in risk assessment
+        - Confidence = min(0.95, 0.50 + (affected_clients_count * 0.15))
+
+        Returns:
+            (new_risk_score, confidence)
+        """
+        try:
+            # Get current risk score from risk_score_adjustments table
+            query = """
+                SELECT final_score, confidence
+                FROM risk_score_adjustments
+                WHERE instance_type = :instance_type
+                  AND availability_zone = :availability_zone
+                  AND region = :region
+            """
+
+            result = await self.db.execute(query, {
+                'instance_type': instance_type,
+                'availability_zone': availability_zone,
+                'region': region
+            })
+
+            row = result.fetchone()
+            base_risk_score = Decimal(str(row[0])) if row else Decimal("0.75")
+
+            # Apply adjustment based on cross-client pattern
+            if risk_level == self.RISK_LEVEL_CONFIRMED_RISKY:
+                risk_adjustment = Decimal("0.20")  # Significant increase
+            elif risk_level == self.RISK_LEVEL_UNCERTAIN:
+                risk_adjustment = Decimal("0.10")  # Moderate increase
+            else:
+                risk_adjustment = Decimal("0.00")  # No change
+
+            new_risk_score = min(Decimal("0.99"), base_risk_score + risk_adjustment)
+
+            # Calculate confidence (more clients = higher confidence)
+            confidence = min(Decimal("0.95"), Decimal("0.50") + (Decimal(str(affected_clients_count)) * Decimal("0.15")))
+
+            # Update database
+            update_query = """
+                UPDATE risk_score_adjustments
+                SET
+                    customer_adjustment = customer_adjustment + :risk_adjustment,
+                    final_score = :new_risk_score,
+                    confidence = :confidence,
+                    observation_count = observation_count + 1,
+                    interruption_count = interruption_count + 1,
+                    last_updated = NOW()
+                WHERE instance_type = :instance_type
+                  AND availability_zone = :availability_zone
+                  AND region = :region
+            """
+
+            await self.db.execute(update_query, {
+                'risk_adjustment': risk_adjustment,
+                'new_risk_score': new_risk_score,
+                'confidence': confidence,
+                'instance_type': instance_type,
+                'availability_zone': availability_zone,
+                'region': region
+            })
+
+            await self.db.commit()
+
+            self.logger.info(
+                f"Updated risk score for {instance_type}/{availability_zone}: "
+                f"{base_risk_score} → {new_risk_score} "
+                f"(+{risk_adjustment} due to {risk_level}, confidence: {confidence})"
+            )
+
+            return new_risk_score, confidence
+
+        except Exception as e:
+            self.logger.error(f"Failed to update pool risk score: {e}")
+            await self.db.rollback()
+            return Decimal("0.75"), Decimal("0.50")
+
+    async def _create_proactive_rebalance_jobs(
+        self,
+        instance_type: str,
+        availability_zone: str,
+        region: str,
+        clients_to_rebalance: List[str],
+        reason: str
+    ) -> List[str]:
+        """
+        Create proactive rebalancing jobs for all clients in risky pool
+
+        These jobs will be executed by Core Platform to move clients
+        out of the risky pool BEFORE they receive termination notices
+
+        Returns:
+            List of rebalance_job_ids created
+        """
+        try:
+            job_ids = []
+
+            for customer_id in clients_to_rebalance:
+                # Create rebalance job
+                query = """
+                    INSERT INTO proactive_rebalance_jobs (
+                        customer_id,
+                        source_instance_type,
+                        source_availability_zone,
+                        region,
+                        reason,
+                        priority,
+                        status,
+                        created_at
+                    ) VALUES (
+                        :customer_id,
+                        :instance_type,
+                        :availability_zone,
+                        :region,
+                        :reason,
+                        'HIGH',
+                        'PENDING',
+                        NOW()
+                    )
+                    RETURNING job_id
+                """
+
+                result = await self.db.execute(query, {
+                    'customer_id': customer_id,
+                    'instance_type': instance_type,
+                    'availability_zone': availability_zone,
+                    'region': region,
+                    'reason': reason
+                })
+
+                row = result.fetchone()
+                if row:
+                    job_id = str(row[0])
+                    job_ids.append(job_id)
+
+                    self.logger.info(
+                        f"Created proactive rebalance job {job_id} for customer {customer_id}: "
+                        f"Move from {instance_type}/{availability_zone} (Reason: {reason})"
+                    )
+
+            await self.db.commit()
+            return job_ids
+
+        except Exception as e:
+            self.logger.error(f"Failed to create proactive rebalance jobs: {e}")
+            await self.db.rollback()
+            return []
+
+    async def get_pool_risk_status(
+        self,
+        instance_type: str,
+        availability_zone: str,
+        region: str
+    ) -> Dict[str, Any]:
+        """
+        Get current risk status for a pool
+
+        Used by Core Platform to check if proactive rebalancing is needed
+
+        Returns:
+            {
+                'risk_level': str,
+                'affected_clients_count': int,
+                'recent_interruptions': int,
+                'risk_score': Decimal,
+                'confidence': Decimal,
+                'recommendation': str,
+                'last_interruption_time': datetime
+            }
+        """
+        try:
+            # Query recent interruptions in this pool
+            pattern_analysis = await self._analyze_cross_client_patterns(
+                instance_type=instance_type,
+                availability_zone=availability_zone,
+                region=region,
+                time_window_minutes=self.TIME_WINDOW_MINUTES,
+                current_interruption_time=datetime.utcnow()
+            )
+
+            # Get current risk score
+            new_risk_score, confidence = await self._update_pool_risk_score_cross_client(
+                instance_type=instance_type,
+                availability_zone=availability_zone,
+                region=region,
+                risk_level=pattern_analysis['risk_level'],
+                affected_clients_count=pattern_analysis['affected_clients_count']
+            )
+
+            # Generate recommendation
+            if pattern_analysis['risk_level'] == self.RISK_LEVEL_CONFIRMED_RISKY:
+                recommendation = "IMMEDIATE REBALANCE - Confirmed risky pool"
+            elif pattern_analysis['risk_level'] == self.RISK_LEVEL_UNCERTAIN:
+                recommendation = "MONITOR CLOSELY - Pattern detected, may need rebalancing"
+            else:
+                recommendation = "CONTINUE NORMAL OPERATIONS"
+
+            return {
+                'risk_level': pattern_analysis['risk_level'],
+                'affected_clients_count': pattern_analysis['affected_clients_count'],
+                'recent_interruptions': pattern_analysis['interruptions_in_window'],
+                'risk_score': float(new_risk_score),
+                'confidence': float(confidence),
+                'recommendation': recommendation,
+                'last_interruption_time': pattern_analysis.get('first_interruption_time'),
+                'pool_identifier': f"{instance_type}/{availability_zone}/{region}"
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to get pool risk status: {e}")
+            return {
+                'risk_level': self.RISK_LEVEL_NORMAL,
+                'affected_clients_count': 0,
+                'recent_interruptions': 0,
+                'risk_score': 0.75,
+                'confidence': 0.50,
+                'recommendation': "ERROR - Unable to assess pool status",
+                'last_interruption_time': None,
+                'pool_identifier': f"{instance_type}/{availability_zone}/{region}"
+            }
