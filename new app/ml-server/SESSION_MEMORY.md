@@ -2756,10 +2756,241 @@ curl http://localhost:8000/api/v1/safety/status
 
 ---
 
+---
+
+## 🚀 Enhanced Training Pipeline: Mumbai Price Predictor V2.0
+
+### Overview
+Enhanced training script that integrates safety enforcement and feedback loop features during model training.
+
+### Files
+- **mumbai_price_predictor.py** (Original) - Basic training pipeline
+- **mumbai_price_predictor_v2.py** (Enhanced) - With revolutionary features ✨
+
+### Key Enhancements in V2.0
+
+#### 1. SafetyValidator Class
+Validates pools and clusters against all five safety constraints during training:
+
+```python
+class SafetyValidator:
+    """Five-Layer Defense Strategy Validator"""
+
+    def validate_pool(self, pool_data):
+        """Validate single pool: Risk ≥0.75, Pool ≤20%"""
+
+    def validate_cluster_recommendation(self, pools):
+        """Validate cluster: ≥3 AZs, ≥15% On-Demand"""
+```
+
+**Features:**
+- Layer 1: Risk threshold validation (≥0.75)
+- Layer 2: AZ distribution check (≥3 zones)
+- Layer 3: Pool concentration limit (≤20%)
+- Layer 4: On-Demand buffer requirement (≥15%)
+- Returns violation details and safe/unsafe classification
+
+#### 2. FeedbackWeightCalculator Class
+Calculates customer feedback weight based on accumulated instance-hours:
+
+```python
+class FeedbackWeightCalculator:
+    """Competitive Moat Timeline Implementation"""
+
+    def calculate_weight(self, total_instance_hours):
+        """
+        Month 1 (0-10K): 0% weight
+        Month 3 (10K-50K): 10% weight
+        Month 6 (50K-200K): 15% weight
+        Month 12+ (500K+): 25% weight (MOAT)
+        """
+
+    def get_milestone_status(self, total_instance_hours):
+        """Returns current milestone and progress"""
+```
+
+#### 3. Adaptive Risk Scoring Function
+Implements the evolving risk formula:
+
+```python
+def calculate_adaptive_risk_score(
+    aws_spot_advisor_score,
+    volatility_score,
+    structural_score,
+    customer_feedback_score,
+    customer_weight
+):
+    """
+    Adaptive Formula:
+    Month 1:  Risk = 60% AWS + 30% Vol + 10% Struct + 0% Cust
+    Month 12: Risk = 35% AWS + 30% Vol + 25% Cust + 10% Struct
+    """
+```
+
+#### 4. Enhanced Risk Scoring Pipeline
+Complete integration of all features:
+
+```python
+def calculate_enhanced_risk_scores(df, safety_validator, feedback_calculator, total_instance_hours):
+    """
+    Workflow:
+    1. Calculate customer feedback weight
+    2. Compute adaptive risk scores for each pool
+    3. Validate all pools against safety constraints
+    4. Flag unsafe pools with violation details
+    5. Track milestone progress
+    6. Report safety compliance rate
+    """
+```
+
+### Training Output Enhancements
+
+**Safety Metrics:**
+- Safety compliance rate (% of safe pools)
+- Unsafe pool count and details
+- Violation type distribution
+- Risk level distribution (SAFE/MEDIUM/RISKY)
+
+**Learning Metrics:**
+- Current feedback weight (0% → 25%)
+- Milestone status (Month 1 → Month 12+)
+- Total instance-hours accumulated
+- Progress to next milestone
+
+**Risk Metrics:**
+- Adaptive risk scores (adjusted by feedback weight)
+- AWS Spot Advisor component (60% → 35%)
+- Customer feedback component (0% → 25%)
+- Safety-validated recommendations only
+
+### Usage Example
+
+```bash
+# Run enhanced training script
+cd "new app/ml-server/training"
+python mumbai_price_predictor_v2.py
+
+# Output includes:
+# ==========================================
+# CloudOptim ML Training V2.0
+# With Safety Enforcement & Feedback Loop
+# ==========================================
+#
+# 🛡️ Safety Validator: ACTIVE
+#   Min Risk Score: 0.75
+#   Min AZs: 3
+#   Max Pool %: 20%
+#   Min On-Demand %: 15%
+#
+# 🎯 Feedback Weight Calculator: ACTIVE
+#   Milestones: Month 1-12+ tracked
+#
+# 📊 Learning Milestone Status:
+#   Milestone: Month 6 (Pattern Detection)
+#   Customer Feedback Weight: 15.0%
+#   Total Instance-Hours: 125,000
+#
+# ✅ Safety Compliance Rate: 91.7%
+#   Safe Pools: 11/12
+#   Unsafe Pools: 1/12
+#
+# ⚠️ Unsafe Pools Detected:
+#   - t3.medium (ap-south-1c): Risk score 0.68 < 0.75 (CRITICAL)
+```
+
+### Integration with Decision Engines
+
+**Spot Optimizer (spot_optimizer.py)**
+- Uses adaptive risk formula during runtime
+- Queries learned risk scores from database
+- Integrates customer feedback weight
+- Already production-ready
+
+**Rightsizing Engine (rightsizing.py)**
+- Hybrid approach (Deterministic + ML)
+- Day Zero compatible
+- ML predictions after 3 months
+- Safety-first merge logic
+
+**Training Pipeline (mumbai_price_predictor_v2.py)**
+- Safety validation during training
+- Adaptive risk scoring with feedback weight
+- Milestone tracking
+- Enhanced model metadata
+
+### Model Metadata Enhancements
+
+Models trained with V2.0 include additional metadata:
+
+```json
+{
+  "safety_config": {
+    "min_risk_score": 0.75,
+    "min_availability_zones": 3,
+    "max_pool_allocation_pct": 0.20,
+    "min_on_demand_buffer_pct": 0.15
+  },
+  "feedback_config": {
+    "current_weight": 0.15,
+    "milestone": "Month 6",
+    "total_instance_hours": 125000
+  },
+  "risk_formula": {
+    "aws_weight": 0.45,
+    "volatility_weight": 0.30,
+    "customer_weight": 0.15,
+    "structural_weight": 0.10
+  },
+  "safety_metrics": {
+    "compliance_rate": 0.917,
+    "safe_pools": 11,
+    "unsafe_pools": 1
+  }
+}
+```
+
+### Deployment Workflow
+
+```bash
+# 1. Train model with enhanced features
+python mumbai_price_predictor_v2.py
+
+# 2. Review safety compliance rate
+#    Target: >90% compliance
+
+# 3. Upload model to ML Server
+#    Models include safety metadata
+
+# 4. Deploy to production
+#    Decision engines use adaptive scoring
+
+# 5. Monitor feedback weight growth
+#    Track progress to 25% (competitive moat)
+```
+
+### Monitoring & Alerting
+
+**Safety Alerts:**
+- Safety compliance rate drops below 90%
+- Critical violations detected during training
+- Unsafe pool recommendations generated
+
+**Learning Alerts:**
+- Milestone transitions (Month 1 → Month 3, etc.)
+- Feedback weight reaches 25% (COMPETITIVE MOAT)
+- Instance-hours accumulation milestones
+
+**Risk Alerts:**
+- Adaptive risk scores diverge from AWS baseline
+- Customer feedback significantly improves accuracy
+- Prediction accuracy improvements over time
+
+---
+
 **Last Updated**: 2025-12-01
 **Added By**: Architecture Team
 **Status**: Production-ready with Revolutionary Features
-**Version**: ML Server v2.0.0 - The Competitive Moat Edition
+**Version**: ML Server v2.0.1 - Enhanced Training Pipeline Edition
 
 **Key Achievements:**
 - ✅ 3,200+ lines of production code
@@ -2771,4 +3002,7 @@ curl http://localhost:8000/api/v1/safety/status
 - ✅ Complete database schema with learning functions
 - ✅ Comprehensive API endpoints
 - ✅ Production-grade monitoring & alerting
+- ✅ **Enhanced training pipeline with safety integration (NEW)**
+- ✅ **SafetyValidator and FeedbackWeightCalculator classes (NEW)**
+- ✅ **Adaptive risk scoring during training (NEW)**
 
