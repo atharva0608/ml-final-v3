@@ -24,6 +24,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta
 from pathlib import Path
+from decimal import Decimal
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -85,6 +86,23 @@ CONFIG = {
         'safe': 0.20,      # Bottom 20% risk
         'medium': 0.70,    # Middle 50%
         'risky': 1.00      # Top 30%
+    },
+
+
+    # SAFETY CONSTRAINTS (Five-Layer Defense)
+    'safety_constraints': {
+        'min_risk_score': 0.75,                # Layer 1: Risk threshold
+        'min_availability_zones': 3,           # Layer 2: AZ distribution
+        'max_pool_allocation_pct': 0.20,       # Layer 3: Pool concentration
+        'min_on_demand_buffer_pct': 0.15,      # Layer 4: On-Demand buffer
+    },
+
+    # CUSTOMER FEEDBACK LOOP (Competitive Moat)
+    'feedback_milestones': {
+        'month_1': {'hours': 10000, 'weight': 0.00},
+        'month_3': {'hours': 50000, 'weight': 0.10},
+        'month_6': {'hours': 200000, 'weight': 0.15},
+        'month_12': {'hours': 500000, 'weight': 0.25},
     },
 
     # Use actual data (set to False to generate sample data)
