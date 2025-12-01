@@ -7,9 +7,9 @@
 # Components Installed:
 #   ✓ PostgreSQL 15+ Database (Docker container)
 #   ✓ Redis 7+ Cache (Docker container)
-#   ✓ Backend API (FastAPI with agentless architecture)
+#   ✓ Backend API (FastAPI with agentless architecture - native)
 #   ✓ Admin Frontend UI (React 18 + TypeScript + Enhanced UX)
-#   ✓ Nginx Reverse Proxy
+#   ✓ Nginx Reverse Proxy (optional)
 #   ✓ Systemd Services
 #
 # Features:
@@ -63,6 +63,10 @@ info() {
 # CONFIGURATION
 # ==============================================================================
 
+# Get script directory (resolves to where this script is located)
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
 # Application directories
 APP_DIR="/home/ubuntu/core-platform"
 BACKEND_DIR="$APP_DIR/api"
@@ -91,6 +95,7 @@ ML_SERVER_URL="http://127.0.0.1:8001"
 
 log "Starting CloudOptim Core Platform Setup..."
 log "============================================"
+log "Project root: $PROJECT_ROOT"
 
 # ==============================================================================
 # STEP 1: GET INSTANCE METADATA USING IMDSv2
@@ -139,7 +144,11 @@ log "Step 2: Updating system and installing dependencies..."
 
 sudo apt-get update -y
 
-# Install essential packages (including kubectl for remote K8s API)
+# Detect Ubuntu version
+UBUNTU_CODENAME=$(lsb_release -cs)
+log "Detected Ubuntu version: $UBUNTU_CODENAME"
+
+# Install essential packages (use system Python)
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
     curl \
     wget \
@@ -151,18 +160,22 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
     gnupg \
     lsb-release \
     build-essential \
-    python3.11 \
-    python3.11-venv \
+    python3 \
+    python3-venv \
     python3-pip \
     nginx \
     jq
 
 # Install kubectl for remote Kubernetes API operations
 log "Installing kubectl..."
-curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-rm kubectl
-log "✓ kubectl installed: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
+if ! command -v kubectl &> /dev/null; then
+    curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+    sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+    rm kubectl
+    log "✓ kubectl installed: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
+else
+    log "kubectl already installed: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
+fi
 
 log "Base packages installed"
 
@@ -321,46 +334,64 @@ else
 fi
 
 # ==============================================================================
-# STEP 8: SETUP PYTHON BACKEND
+# STEP 8: COPY PROJECT FILES
 # ==============================================================================
 
-log "Step 8: Setting up Python backend..."
+log "Step 8: Copying project files..."
+
+# Copy backend files
+if [ -d "$PROJECT_ROOT/api" ]; then
+    log "Copying backend files from $PROJECT_ROOT/api..."
+    cp -r "$PROJECT_ROOT/api"/* "$BACKEND_DIR/" || warn "Failed to copy some backend files"
+    log "✓ Backend files copied"
+else
+    warn "Backend directory not found at $PROJECT_ROOT/api"
+fi
+
+# Copy frontend files
+if [ -d "$PROJECT_ROOT/admin-frontend" ]; then
+    log "Copying frontend files from $PROJECT_ROOT/admin-frontend..."
+    cp -r "$PROJECT_ROOT/admin-frontend"/* "$FRONTEND_DIR/" || warn "Failed to copy some frontend files"
+    log "✓ Frontend files copied"
+else
+    warn "Frontend directory not found at $PROJECT_ROOT/admin-frontend"
+fi
+
+log "Project files copied"
+
+# ==============================================================================
+# STEP 9: SETUP PYTHON BACKEND
+# ==============================================================================
+
+log "Step 9: Setting up Python backend..."
 
 cd "$BACKEND_DIR"
 
-# Create Python virtual environment
-python3.11 -m venv venv
+# Create Python virtual environment using system Python
+PYTHON_CMD=$(which python3)
+log "Using Python: $PYTHON_CMD ($($PYTHON_CMD --version))"
+
+$PYTHON_CMD -m venv venv
 
 # Activate virtual environment
 source venv/bin/activate
 
-# Create requirements.txt
-cat > "$BACKEND_DIR/requirements.txt" << 'EOF'
-fastapi==0.103.0
-uvicorn[standard]==0.23.2
-asyncpg==0.29.0
-redis==5.0.0
-pydantic==2.4.2
-pydantic-settings==2.0.3
-boto3==1.28.25
-kubernetes==27.2.0
-httpx==0.25.0
-python-dotenv==1.0.0
-python-multipart==0.0.6
-PyJWT==2.8.0
-passlib[bcrypt]==1.7.4
-python-jose==3.3.0
-sqlalchemy==2.0.23
-alembic==1.12.1
-APScheduler==3.10.4
-aiofiles==23.2.1
-EOF
-
-log "Installing Python dependencies..."
+# Install/upgrade pip
+log "Upgrading pip..."
 pip install --upgrade pip setuptools wheel > /dev/null 2>&1
-pip install -r "$BACKEND_DIR/requirements.txt"
 
-log "Python dependencies installed"
+# Install dependencies if requirements.txt exists
+if [ -f "$PROJECT_ROOT/requirements.txt" ]; then
+    log "Installing Python dependencies from $PROJECT_ROOT/requirements.txt..."
+    pip install -r "$PROJECT_ROOT/requirements.txt"
+    log "Python dependencies installed"
+elif [ -f "$BACKEND_DIR/requirements.txt" ]; then
+    log "Installing Python dependencies from $BACKEND_DIR/requirements.txt..."
+    pip install -r "$BACKEND_DIR/requirements.txt"
+    log "Python dependencies installed"
+else
+    warn "No requirements.txt found, skipping Python dependencies installation"
+fi
 
 # Create environment configuration
 cat > "$BACKEND_DIR/.env" << EOF
@@ -398,7 +429,7 @@ EOF
 log "✓ Backend .env file created"
 
 # Create startup script
-cat > "$BACKEND_DIR/start.sh" << 'EOF'
+cat > "$BACKEND_DIR/start.sh" << 'BACKEND_START_EOF'
 #!/bin/bash
 cd /home/ubuntu/core-platform/api
 source venv/bin/activate
@@ -414,171 +445,47 @@ exec uvicorn main:app \
     --log-level info \
     --access-log \
     --use-colors
-EOF
+BACKEND_START_EOF
 
 chmod +x "$BACKEND_DIR/start.sh"
-
-# Create placeholder main.py
-cat > "$BACKEND_DIR/main.py" << 'EOF'
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-import os
-
-app = FastAPI(title="CloudOptim Core Platform")
-
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "service": "core-platform"}
-
-@app.get("/")
-async def root():
-    return {"message": "CloudOptim Core Platform - Ready for deployment"}
-
-@app.get("/api/v1/ml/health")
-async def ml_health():
-    # Placeholder for ML Server health check
-    return {"ml_server": "not_configured"}
-EOF
 
 deactivate
 
 log "Backend setup complete"
 
 # ==============================================================================
-# STEP 9: SETUP REACT FRONTEND
+# STEP 10: SETUP REACT FRONTEND
 # ==============================================================================
 
-log "Step 9: Setting up React frontend..."
+log "Step 10: Setting up React frontend..."
 
-cd "$FRONTEND_DIR"
+if [ -d "$FRONTEND_DIR" ] && [ -f "$FRONTEND_DIR/package.json" ]; then
+    cd "$FRONTEND_DIR"
 
-# Create package.json
-cat > "$FRONTEND_DIR/package.json" << 'EOF'
-{
-  "name": "core-platform-admin",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.15.0",
-    "@mui/material": "^5.14.0",
-    "@emotion/react": "^11.11.1",
-    "@emotion/styled": "^11.11.0",
-    "recharts": "^2.8.0",
-    "framer-motion": "^10.16.0",
-    "@tanstack/react-query": "^4.35.0",
-    "numeral": "^2.0.6",
-    "axios": "^1.5.0"
-  },
-  "devDependencies": {
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
-    "@types/numeral": "^2.0.2",
-    "@vitejs/plugin-react": "^4.0.0",
-    "vite": "^4.4.0",
-    "typescript": "^5.0.0"
-  }
-}
-EOF
+    log "Installing npm dependencies..."
+    npm install --legacy-peer-deps
 
-# Create vite config
-cat > "$FRONTEND_DIR/vite.config.js" << EOF
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+    log "Building frontend..."
+    npm run build
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 3000,
-    proxy: {
-      '/api': 'http://localhost:8000'
-    }
-  },
-  build: {
-    outDir: 'dist'
-  }
-})
-EOF
-
-# Create basic index.html
-cat > "$FRONTEND_DIR/index.html" << EOF
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Core Platform Admin</title>
-</head>
-<body>
-  <div id="root"></div>
-  <script type="module" src="/src/main.jsx"></script>
-</body>
-</html>
-EOF
-
-# Create src directory
-mkdir -p "$FRONTEND_DIR/src"
-cat > "$FRONTEND_DIR/src/main.jsx" << 'EOF'
-import React from 'react'
-import ReactDOM from 'react-dom/client'
-import App from './App'
-
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-)
-EOF
-
-cat > "$FRONTEND_DIR/src/App.jsx" << 'EOF'
-import React from 'react'
-
-function App() {
-  return (
-    <div style={{ padding: '20px', fontFamily: 'Arial', background: '#0A1929', color: 'white', minHeight: '100vh' }}>
-      <h1>CloudOptim Core Platform</h1>
-      <p>Admin Frontend is ready. Deploy your React application here.</p>
-    </div>
-  )
-}
-
-export default App
-EOF
-
-log "Installing npm dependencies..."
-npm install --legacy-peer-deps
-
-log "Building frontend..."
-npm run build
-
-# Copy build to Nginx root
-sudo rm -rf "$NGINX_ROOT"/*
-sudo cp -r dist/* "$NGINX_ROOT/"
-sudo chown -R www-data:www-data "$NGINX_ROOT"
-
-log "Frontend built and deployed"
+    # Copy build to Nginx root
+    if [ -d "$FRONTEND_DIR/dist" ]; then
+        sudo rm -rf "$NGINX_ROOT"/*
+        sudo cp -r dist/* "$NGINX_ROOT/"
+        sudo chown -R www-data:www-data "$NGINX_ROOT"
+        log "Frontend built and deployed"
+    else
+        warn "No dist directory found after build"
+    fi
+else
+    warn "Frontend directory or package.json not found, skipping frontend build"
+fi
 
 # ==============================================================================
-# STEP 10: CONFIGURE NGINX
+# STEP 11: CONFIGURE NGINX
 # ==============================================================================
 
-log "Step 10: Configuring Nginx..."
+log "Step 11: Configuring Nginx..."
 
 sudo tee /etc/nginx/sites-available/core-platform << EOF
 server {
@@ -599,6 +506,8 @@ server {
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
         proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_cache_bypass \$http_upgrade;
         proxy_read_timeout 120s;
     }
@@ -617,10 +526,10 @@ sudo systemctl enable nginx
 log "Nginx configured"
 
 # ==============================================================================
-# STEP 11: CREATE SYSTEMD SERVICE
+# STEP 12: CREATE SYSTEMD SERVICE
 # ==============================================================================
 
-log "Step 11: Creating systemd service..."
+log "Step 12: Creating systemd service..."
 
 sudo tee /etc/systemd/system/core-platform.service << EOF
 [Unit]
@@ -655,10 +564,10 @@ sudo systemctl enable core-platform
 log "Systemd service created"
 
 # ==============================================================================
-# STEP 12: CREATE HELPER SCRIPTS
+# STEP 13: CREATE HELPER SCRIPTS
 # ==============================================================================
 
-log "Step 12: Creating helper scripts..."
+log "Step 13: Creating helper scripts..."
 
 # Start script
 cat > "$SCRIPTS_DIR/start.sh" << 'SCRIPT_EOF'
@@ -714,10 +623,10 @@ chmod +x "$SCRIPTS_DIR/restart.sh"
 log "Helper scripts created"
 
 # ==============================================================================
-# STEP 13: START SERVICES
+# STEP 14: START SERVICES
 # ==============================================================================
 
-log "Step 13: Starting Core Platform services..."
+log "Step 14: Starting Core Platform services..."
 
 sudo systemctl start core-platform
 
@@ -738,14 +647,14 @@ done
 if curl -s http://localhost:8000/health > /dev/null 2>&1; then
     log "✓ Core Platform backend is healthy!"
 else
-    warn "Backend may not be fully operational"
+    warn "Backend may not be fully operational. Check logs: sudo journalctl -u core-platform -n 50"
 fi
 
 # ==============================================================================
-# STEP 14: CREATE SETUP SUMMARY
+# STEP 15: CREATE SETUP SUMMARY
 # ==============================================================================
 
-log "Step 14: Creating setup summary..."
+log "Step 15: Creating setup summary..."
 
 cat > /home/ubuntu/CORE_PLATFORM_SETUP_COMPLETE.txt << EOF
 ================================================================================
@@ -762,7 +671,7 @@ ACCESS URLS
 ================================================================================
 Core Platform Backend API: http://$PUBLIC_IP:8000
 Admin Frontend Dashboard: http://$PUBLIC_IP/
-Health Check: http://$PUBLIC_IP/health
+Health Check: http://$PUBLIC_IP:8000/health
 
 ================================================================================
 DIRECTORIES
@@ -774,18 +683,24 @@ Logs: $LOGS_DIR
 Scripts: $SCRIPTS_DIR
 
 ================================================================================
-DATABASE & CACHE
+DATABASE & CACHE (Docker)
 ================================================================================
 PostgreSQL:
+  Container: core-postgres
   Host: 127.0.0.1
   Port: $DB_PORT
   Database: $DB_NAME
   User: $DB_USER
   Password: $DB_PASSWORD
+  Volume: core-postgres-data
 
 Redis:
+  Container: core-redis
   Host: 127.0.0.1
   Port: $REDIS_PORT
+  Volume: core-redis-data
+
+Docker Network: core-network
 
 ================================================================================
 AGENTLESS ARCHITECTURE
@@ -809,10 +724,8 @@ NEXT STEPS
 1. Check status: ~/core-scripts/status.sh
 2. View logs: sudo journalctl -u core-platform -f
 3. Configure ML Server URL if needed: Edit $BACKEND_DIR/.env
-4. Deploy your backend code to: $BACKEND_DIR
-5. Deploy your frontend code to: $FRONTEND_DIR
-6. Configure AWS credentials for EC2/SQS operations
-7. Set up customer kubeconfig files for remote K8s access
+4. Configure AWS credentials for EC2/SQS operations
+5. Set up customer kubeconfig files for remote K8s access
 
 ================================================================================
 TROUBLESHOOTING
@@ -821,6 +734,12 @@ Backend logs: sudo journalctl -u core-platform -f
 PostgreSQL logs: docker logs core-postgres
 Redis logs: docker logs core-redis
 Nginx logs: sudo tail -f /var/log/nginx/error.log
+
+Test database connection:
+  docker exec -it core-postgres psql -U $DB_USER -d $DB_NAME
+
+Test Redis connection:
+  docker exec -it core-redis redis-cli ping
 
 ================================================================================
 EOF
@@ -831,9 +750,9 @@ log "============================================"
 log "CORE PLATFORM SETUP COMPLETE!"
 log "============================================"
 log ""
-log "✓ PostgreSQL database running on port $DB_PORT"
-log "✓ Redis cache running on port $REDIS_PORT"
-log "✓ Backend API running on port $BACKEND_PORT"
+log "✓ PostgreSQL database running in Docker on port $DB_PORT"
+log "✓ Redis cache running in Docker on port $REDIS_PORT"
+log "✓ Backend API running natively on port $BACKEND_PORT"
 log "✓ Admin Frontend serving on port 80"
 log "✓ kubectl installed for remote K8s API"
 log ""

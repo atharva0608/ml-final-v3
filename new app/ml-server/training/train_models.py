@@ -240,7 +240,7 @@ class CloudOptimModelTrainer:
             df[f'price_lag_{lag}h'] = df.groupby('instance_type')['spot_price'].shift(lag)
 
         # Fill NaN values from rolling/lag features
-        df = df.fillna(method='bfill').fillna(method='ffill')
+        df = df.bfill().ffill()
 
         logger.info(f"Created {len(df.columns)} features")
         return df

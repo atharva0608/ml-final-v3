@@ -7,9 +7,9 @@
 # Components Installed:
 #   ✓ PostgreSQL 15+ Database (Docker container)
 #   ✓ Redis 7+ Cache (Docker container)
-#   ✓ Backend API (FastAPI with 8 decision engines)
+#   ✓ Backend API (FastAPI with 8 decision engines - native)
 #   ✓ ML Frontend UI (React 18 + TypeScript)
-#   ✓ Nginx Reverse Proxy
+#   ✓ Nginx Reverse Proxy (optional)
 #   ✓ Systemd Services
 #
 # Features:
@@ -62,6 +62,10 @@ info() {
 # CONFIGURATION
 # ==============================================================================
 
+# Get script directory (resolves to where this script is located)
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
 # Application directories
 APP_DIR="/home/ubuntu/ml-server"
 BACKEND_DIR="$APP_DIR/backend"
@@ -89,6 +93,7 @@ NGINX_ROOT="/var/www/ml-server"
 
 log "Starting CloudOptim ML Server Setup..."
 log "============================================"
+log "Project root: $PROJECT_ROOT"
 
 # ==============================================================================
 # STEP 1: GET INSTANCE METADATA USING IMDSv2
@@ -137,7 +142,11 @@ log "Step 2: Updating system and installing dependencies..."
 
 sudo apt-get update -y
 
-# Install essential packages
+# Detect Ubuntu version
+UBUNTU_CODENAME=$(lsb_release -cs)
+log "Detected Ubuntu version: $UBUNTU_CODENAME"
+
+# Install essential packages (use system Python)
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
     curl \
     wget \
@@ -149,8 +158,8 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
     gnupg \
     lsb-release \
     build-essential \
-    python3.11 \
-    python3.11-venv \
+    python3 \
+    python3-venv \
     python3-pip \
     nginx \
     jq
@@ -319,49 +328,80 @@ else
 fi
 
 # ==============================================================================
-# STEP 8: SETUP PYTHON BACKEND
+# STEP 8: COPY PROJECT FILES
 # ==============================================================================
 
-log "Step 8: Setting up Python backend..."
+log "Step 8: Copying project files..."
+
+# Copy backend files
+if [ -d "$PROJECT_ROOT/backend" ]; then
+    log "Copying backend files from $PROJECT_ROOT/backend..."
+    cp -r "$PROJECT_ROOT/backend"/* "$BACKEND_DIR/" || warn "Failed to copy some backend files"
+    log "✓ Backend files copied"
+else
+    warn "Backend directory not found at $PROJECT_ROOT/backend"
+fi
+
+# Copy frontend files
+if [ -d "$PROJECT_ROOT/ml-frontend" ]; then
+    log "Copying frontend files from $PROJECT_ROOT/ml-frontend..."
+    cp -r "$PROJECT_ROOT/ml-frontend"/* "$FRONTEND_DIR/" || warn "Failed to copy some frontend files"
+    log "✓ Frontend files copied"
+else
+    warn "Frontend directory not found at $PROJECT_ROOT/ml-frontend"
+fi
+
+# Copy decision engines
+if [ -d "$PROJECT_ROOT/decision_engine" ]; then
+    log "Copying decision engines from $PROJECT_ROOT/decision_engine..."
+    cp -r "$PROJECT_ROOT/decision_engine"/* "$ENGINES_DIR/" || warn "Failed to copy decision engines"
+    log "✓ Decision engines copied"
+else
+    warn "Decision engine directory not found at $PROJECT_ROOT/decision_engine"
+fi
+
+# Copy models directory if exists
+if [ -d "$PROJECT_ROOT/models" ]; then
+    log "Copying models from $PROJECT_ROOT/models..."
+    cp -r "$PROJECT_ROOT/models"/* "$MODELS_DIR/" 2>/dev/null || true
+    log "✓ Models directory processed"
+fi
+
+log "Project files copied"
+
+# ==============================================================================
+# STEP 9: SETUP PYTHON BACKEND
+# ==============================================================================
+
+log "Step 9: Setting up Python backend..."
 
 cd "$BACKEND_DIR"
 
-# Create Python virtual environment
-python3.11 -m venv venv
+# Create Python virtual environment using system Python
+PYTHON_CMD=$(which python3)
+log "Using Python: $PYTHON_CMD ($($PYTHON_CMD --version))"
+
+$PYTHON_CMD -m venv venv
 
 # Activate virtual environment
 source venv/bin/activate
 
-# Create requirements.txt with exact dependencies
-cat > "$BACKEND_DIR/requirements.txt" << 'EOF'
-fastapi==0.103.0
-uvicorn[standard]==0.23.2
-asyncpg==0.29.0
-redis==5.0.0
-pydantic==2.4.2
-pydantic-settings==2.0.3
-numpy==1.24.3
-pandas==2.0.3
-scikit-learn==1.3.0
-xgboost==1.7.6
-lightgbm==4.0.0
-python-dotenv==1.0.0
-httpx==0.25.0
-python-multipart==0.0.6
-PyJWT==2.8.0
-passlib[bcrypt]==1.7.4
-python-jose==3.3.0
-sqlalchemy==2.0.23
-alembic==1.12.1
-APScheduler==3.10.4
-aiofiles==23.2.1
-EOF
-
-log "Installing Python dependencies..."
+# Install/upgrade pip
+log "Upgrading pip..."
 pip install --upgrade pip setuptools wheel > /dev/null 2>&1
-pip install -r "$BACKEND_DIR/requirements.txt"
 
-log "Python dependencies installed"
+# Install dependencies if requirements.txt exists
+if [ -f "$PROJECT_ROOT/requirements.txt" ]; then
+    log "Installing Python dependencies from $PROJECT_ROOT/requirements.txt..."
+    pip install -r "$PROJECT_ROOT/requirements.txt"
+    log "Python dependencies installed"
+elif [ -f "$BACKEND_DIR/requirements.txt" ]; then
+    log "Installing Python dependencies from $BACKEND_DIR/requirements.txt..."
+    pip install -r "$BACKEND_DIR/requirements.txt"
+    log "Python dependencies installed"
+else
+    warn "No requirements.txt found, skipping Python dependencies installation"
+fi
 
 # Create environment configuration file
 cat > "$BACKEND_DIR/.env" << EOF
@@ -400,7 +440,7 @@ EOF
 log "✓ Backend .env file created"
 
 # Create startup script
-cat > "$BACKEND_DIR/start.sh" << 'EOF'
+cat > "$BACKEND_DIR/start.sh" << 'BACKEND_START_EOF'
 #!/bin/bash
 cd /home/ubuntu/ml-server/backend
 source venv/bin/activate
@@ -416,163 +456,47 @@ exec uvicorn main:app \
     --log-level info \
     --access-log \
     --use-colors
-EOF
+BACKEND_START_EOF
 
 chmod +x "$BACKEND_DIR/start.sh"
-
-# Create placeholder main.py
-cat > "$BACKEND_DIR/main.py" << 'EOF'
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-import os
-
-app = FastAPI(title="CloudOptim ML Server")
-
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "service": "ml-server"}
-
-@app.get("/")
-async def root():
-    return {"message": "CloudOptim ML Server - Ready for deployment"}
-EOF
 
 deactivate
 
 log "Backend setup complete"
 
 # ==============================================================================
-# STEP 9: SETUP REACT FRONTEND
+# STEP 10: SETUP REACT FRONTEND
 # ==============================================================================
 
-log "Step 9: Setting up React frontend..."
+log "Step 10: Setting up React frontend..."
 
-cd "$FRONTEND_DIR"
+if [ -d "$FRONTEND_DIR" ] && [ -f "$FRONTEND_DIR/package.json" ]; then
+    cd "$FRONTEND_DIR"
 
-# Create package.json
-cat > "$FRONTEND_DIR/package.json" << 'EOF'
-{
-  "name": "ml-server-frontend",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-router-dom": "^6.15.0",
-    "@mui/material": "^5.14.0",
-    "@emotion/react": "^11.11.1",
-    "@emotion/styled": "^11.11.0",
-    "recharts": "^2.8.0",
-    "axios": "^1.5.0"
-  },
-  "devDependencies": {
-    "@types/react": "^18.2.0",
-    "@types/react-dom": "^18.2.0",
-    "@vitejs/plugin-react": "^4.0.0",
-    "vite": "^4.4.0",
-    "typescript": "^5.0.0"
-  }
-}
-EOF
+    log "Installing npm dependencies..."
+    npm install --legacy-peer-deps
 
-# Create vite config
-cat > "$FRONTEND_DIR/vite.config.js" << EOF
-import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+    log "Building frontend..."
+    npm run build
 
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 3001,
-    proxy: {
-      '/api': 'http://localhost:8001'
-    }
-  },
-  build: {
-    outDir: 'dist'
-  }
-})
-EOF
-
-# Create basic index.html
-mkdir -p "$FRONTEND_DIR/public"
-cat > "$FRONTEND_DIR/index.html" << EOF
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>ML Server</title>
-</head>
-<body>
-  <div id="root"></div>
-  <script type="module" src="/src/main.jsx"></script>
-</body>
-</html>
-EOF
-
-# Create src directory
-mkdir -p "$FRONTEND_DIR/src"
-cat > "$FRONTEND_DIR/src/main.jsx" << 'EOF'
-import React from 'react'
-import ReactDOM from 'react-dom/client'
-import App from './App'
-
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-)
-EOF
-
-cat > "$FRONTEND_DIR/src/App.jsx" << 'EOF'
-import React from 'react'
-
-function App() {
-  return (
-    <div style={{ padding: '20px', fontFamily: 'Arial' }}>
-      <h1>CloudOptim ML Server</h1>
-      <p>Frontend is ready. Deploy your React application here.</p>
-    </div>
-  )
-}
-
-export default App
-EOF
-
-log "Installing npm dependencies..."
-npm install --legacy-peer-deps
-
-log "Building frontend..."
-npm run build
-
-# Copy build to Nginx root
-sudo rm -rf "$NGINX_ROOT"/*
-sudo cp -r dist/* "$NGINX_ROOT/"
-sudo chown -R www-data:www-data "$NGINX_ROOT"
-
-log "Frontend built and deployed"
+    # Copy build to Nginx root
+    if [ -d "$FRONTEND_DIR/dist" ]; then
+        sudo rm -rf "$NGINX_ROOT"/*
+        sudo cp -r dist/* "$NGINX_ROOT/"
+        sudo chown -R www-data:www-data "$NGINX_ROOT"
+        log "Frontend built and deployed"
+    else
+        warn "No dist directory found after build"
+    fi
+else
+    warn "Frontend directory or package.json not found, skipping frontend build"
+fi
 
 # ==============================================================================
-# STEP 10: CONFIGURE NGINX
+# STEP 11: CONFIGURE NGINX
 # ==============================================================================
 
-log "Step 10: Configuring Nginx..."
+log "Step 11: Configuring Nginx..."
 
 sudo tee /etc/nginx/sites-available/ml-server << EOF
 server {
@@ -592,7 +516,10 @@ server {
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
         proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_cache_bypass \$http_upgrade;
+        proxy_read_timeout 120s;
     }
 
     gzip on;
@@ -608,10 +535,10 @@ sudo systemctl enable nginx
 log "Nginx configured"
 
 # ==============================================================================
-# STEP 11: CREATE SYSTEMD SERVICE
+# STEP 12: CREATE SYSTEMD SERVICE
 # ==============================================================================
 
-log "Step 11: Creating systemd service..."
+log "Step 12: Creating systemd service..."
 
 sudo tee /etc/systemd/system/ml-server.service << EOF
 [Unit]
@@ -646,10 +573,10 @@ sudo systemctl enable ml-server
 log "Systemd service created"
 
 # ==============================================================================
-# STEP 12: CREATE HELPER SCRIPTS
+# STEP 13: CREATE HELPER SCRIPTS
 # ==============================================================================
 
-log "Step 12: Creating helper scripts..."
+log "Step 13: Creating helper scripts..."
 
 # Start script
 cat > "$SCRIPTS_DIR/start.sh" << 'SCRIPT_EOF'
@@ -705,10 +632,10 @@ chmod +x "$SCRIPTS_DIR/restart.sh"
 log "Helper scripts created"
 
 # ==============================================================================
-# STEP 13: START SERVICES
+# STEP 14: START SERVICES
 # ==============================================================================
 
-log "Step 13: Starting ML Server services..."
+log "Step 14: Starting ML Server services..."
 
 sudo systemctl start ml-server
 
@@ -729,14 +656,14 @@ done
 if curl -s http://localhost:8001/health > /dev/null 2>&1; then
     log "✓ ML Server backend is healthy!"
 else
-    warn "Backend may not be fully operational"
+    warn "Backend may not be fully operational. Check logs: sudo journalctl -u ml-server -n 50"
 fi
 
 # ==============================================================================
-# STEP 14: CREATE SETUP SUMMARY
+# STEP 15: CREATE SETUP SUMMARY
 # ==============================================================================
 
-log "Step 14: Creating setup summary..."
+log "Step 15: Creating setup summary..."
 
 cat > /home/ubuntu/ML_SERVER_SETUP_COMPLETE.txt << EOF
 ================================================================================
@@ -767,18 +694,41 @@ Logs: $LOGS_DIR
 Scripts: $SCRIPTS_DIR
 
 ================================================================================
-DATABASE & CACHE
+DATABASE & CACHE (Docker)
 ================================================================================
 PostgreSQL:
+  Container: ml-postgres
   Host: 127.0.0.1
   Port: $DB_PORT
   Database: $DB_NAME
   User: $DB_USER
   Password: $DB_PASSWORD
+  Volume: ml-postgres-data
 
 Redis:
+  Container: ml-redis
   Host: 127.0.0.1
   Port: $REDIS_PORT
+  Volume: ml-redis-data
+
+Docker Network: ml-network
+
+================================================================================
+ML CAPABILITIES
+================================================================================
+✓ 8 CAST AI Decision Engines
+  - Spot Instance Optimizer
+  - Bin Packing (Tetris)
+  - Rightsizing
+  - Office Hours Scheduler
+  - Ghost Probe Scanner
+  - Zombie Volume Cleanup
+  - Network Optimizer
+  - OOMKilled Remediation
+
+✓ Model Upload Directory: $MODELS_DIR
+✓ Day Zero Operation (AWS Spot Advisor data)
+✓ Data Gap Filler
 
 ================================================================================
 HELPER SCRIPTS
@@ -794,8 +744,8 @@ NEXT STEPS
 1. Check status: ~/ml-scripts/status.sh
 2. View logs: sudo journalctl -u ml-server -f
 3. Upload models to: $MODELS_DIR
-4. Deploy your backend code to: $BACKEND_DIR
-5. Deploy your frontend code to: $FRONTEND_DIR
+4. Train models: cd $PROJECT_ROOT/training && python3 train_models.py
+5. Test endpoints: curl http://localhost:8001/health
 
 ================================================================================
 TROUBLESHOOTING
@@ -804,6 +754,16 @@ Backend logs: sudo journalctl -u ml-server -f
 PostgreSQL logs: docker logs ml-postgres
 Redis logs: docker logs ml-redis
 Nginx logs: sudo tail -f /var/log/nginx/error.log
+
+Test database connection:
+  docker exec -it ml-postgres psql -U $DB_USER -d $DB_NAME
+
+Test Redis connection:
+  docker exec -it ml-redis redis-cli ping
+
+Model training:
+  cd $PROJECT_ROOT/training
+  python3 train_models.py --model spot_predictor --region us-east-1
 
 ================================================================================
 EOF
@@ -814,10 +774,11 @@ log "============================================"
 log "ML SERVER SETUP COMPLETE!"
 log "============================================"
 log ""
-log "✓ PostgreSQL database running on port $DB_PORT"
-log "✓ Redis cache running on port $REDIS_PORT"
-log "✓ Backend API running on port $BACKEND_PORT"
+log "✓ PostgreSQL database running in Docker on port $DB_PORT"
+log "✓ Redis cache running in Docker on port $REDIS_PORT"
+log "✓ Backend API running natively on port $BACKEND_PORT"
 log "✓ Frontend serving on port 3001"
+log "✓ 8 Decision engines ready"
 log ""
 log "Backend API: http://$PUBLIC_IP:8001"
 log "Frontend: http://$PUBLIC_IP:3001"
