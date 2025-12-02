@@ -90,7 +90,7 @@ const FEATURE_METADATA = {
   }
 };
 
-export const FeatureTog gles: React.FC = () => {
+export const FeatureToggles: React.FC = () => {
   const [features, setFeatures] = useState<FeatureToggles | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);

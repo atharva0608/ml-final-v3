@@ -473,20 +473,26 @@ log "Step 10: Setting up React frontend..."
 if [ -d "$FRONTEND_DIR" ] && [ -f "$FRONTEND_DIR/package.json" ]; then
     cd "$FRONTEND_DIR"
 
+    # Ensure proper ownership and clean old build
+    log "Ensuring proper permissions..."
+    sudo chown -R $USER:$USER "$FRONTEND_DIR"
+    sudo rm -rf build/ node_modules/.cache
+
     log "Installing npm dependencies..."
     npm install --force
 
     log "Building frontend..."
+    export GENERATE_SOURCEMAP=false
     npm run build
 
-    # Copy build to Nginx root
-    if [ -d "$FRONTEND_DIR/dist" ]; then
+    # Copy build to Nginx root (React uses 'build' not 'dist')
+    if [ -d "$FRONTEND_DIR/build" ]; then
         sudo rm -rf "$NGINX_ROOT"/*
-        sudo cp -r dist/* "$NGINX_ROOT/"
+        sudo cp -r build/* "$NGINX_ROOT/"
         sudo chown -R www-data:www-data "$NGINX_ROOT"
         log "Frontend built and deployed"
     else
-        warn "No dist directory found after build"
+        warn "No build directory found after build"
     fi
 else
     warn "Frontend directory or package.json not found, skipping frontend build"
