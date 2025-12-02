@@ -7,6 +7,16 @@ Purpose: Main FastAPI application for ML model management, decision engines,
 Architecture: Agentless (no client-side agents, remote API only)
 """
 
+import sys
+import os
+from pathlib import Path
+
+# Add parent directory to Python path to find decision_engine module
+current_dir = Path(__file__).parent
+ml_server_root = current_dir.parent
+if str(ml_server_root) not in sys.path:
+    sys.path.insert(0, str(ml_server_root))
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
