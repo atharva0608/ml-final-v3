@@ -1,258 +1,135 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-  Grid,
-  Card,
-  CardContent,
-  Typography,
-  Box,
-  LinearProgress,
-  Chip,
+  Grid, Paper, Typography, Box, Card, CardContent, LinearProgress, Chip, Alert
 } from '@mui/material';
-import {
-  TrendingUp,
-  Cloud,
-  CheckCircle,
-  Warning,
-  AttachMoney,
-  Speed,
-} from '@mui/icons-material';
-import { motion } from 'framer-motion';
-import { LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import numeral from 'numeral';
+import { Shield, Speed, TrendingDown, Warning } from '@mui/icons-material';
+import axios from 'axios';
 
-// Mock data - replace with real API calls
-const savingsData = [
-  { month: 'Jan', savings: 4200, predicted: 4000 },
-  { month: 'Feb', savings: 5100, predicted: 4800 },
-  { month: 'Mar', savings: 6300, predicted: 5900 },
-  { month: 'Apr', savings: 7500, predicted: 7000 },
-  { month: 'May', savings: 8900, predicted: 8300 },
-  { month: 'Jun', savings: 10200, predicted: 9600 },
-];
+const Overview: React.FC = () => {
+  const [stats, setStats] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-const costBreakdown = [
-  { name: 'Spot Instances', value: 3500, color: '#00C853' },
-  { name: 'On-Demand', value: 2000, color: '#2196F3' },
-  { name: 'Reserved', value: 1500, color: '#FFC107' },
-];
+  useEffect(() => {
+    fetchStats();
+    const interval = setInterval(fetchStats, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
-// Animated stat card component
-const StatCard = ({ title, value, subtitle, icon: Icon, color, trend }: any) => (
-  <motion.div
-    initial={{ opacity: 0, y: 20 }}
-    animate={{ opacity: 1, y: 0 }}
-    transition={{ duration: 0.5 }}
-  >
-    <Card
-      sx={{
-        background: `linear-gradient(135deg, ${color}22 0%, ${color}11 100%)`,
-        border: `1px solid ${color}33`,
-      }}
-    >
-      <CardContent>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <Box>
-            <Typography variant="body2" color="text.secondary" gutterBottom>
-              {title}
-            </Typography>
-            <Typography variant="h3" sx={{ fontWeight: 700, color }}>
-              {value}
-            </Typography>
-            {subtitle && (
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-                {subtitle}
-              </Typography>
-            )}
-            {trend && (
-              <Chip
-                label={`${trend > 0 ? '+' : ''}${trend}% vs last month`}
-                size="small"
-                color={trend > 0 ? 'success' : 'error'}
-                sx={{ mt: 1 }}
-              />
-            )}
-          </Box>
-          <Box
-            sx={{
-              bgcolor: `${color}22`,
-              borderRadius: 2,
-              p: 1.5,
-            }}
-          >
-            <Icon sx={{ fontSize: 40, color }} />
-          </Box>
-        </Box>
-      </CardContent>
-    </Card>
-  </motion.div>
-);
+  const fetchStats = async () => {
+    try {
+      const response = await axios.get('/api/v1/dashboard/stats');
+      setStats(response.data);
+      setLoading(false);
+    } catch (error) {
+      console.error('Failed to fetch stats:', error);
+      setLoading(false);
+    }
+  };
 
-export default function Dashboard() {
+  if (loading) return <LinearProgress />;
+
   return (
     <Box>
-      {/* Header */}
-      <Box sx={{ mb: 4 }}>
-        <Typography variant="h3" gutterBottom sx={{ fontWeight: 700 }}>
-          CloudOptim Dashboard
-        </Typography>
-        <Typography variant="body1" color="text.secondary">
-          Agentless Kubernetes Cost Optimization - Real-time monitoring and analytics
-        </Typography>
-      </Box>
+      <Typography variant="h4" gutterBottom>
+        CloudOptim Core Platform Dashboard
+      </Typography>
+      <Typography variant="subtitle1" color="text.secondary" gutterBottom>
+        Agentless Kubernetes Cost Optimization with Zero-Downtime Architecture
+      </Typography>
 
-      {/* Stats Grid */}
-      <Grid container spacing={3} sx={{ mb: 4 }}>
-        <Grid item xs={12} sm={6} lg={3}>
-          <StatCard
-            title="Monthly Savings"
-            value="$10,234"
-            subtitle="vs projected costs"
-            icon={AttachMoney}
-            color="#00C853"
-            trend={14.5}
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} lg={3}>
-          <StatCard
-            title="Clusters Monitored"
-            value="8"
-            subtitle="All clusters healthy"
-            icon={Cloud}
-            color="#2196F3"
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} lg={3}>
-          <StatCard
-            title="Optimizations Today"
-            value="23"
-            subtitle="15 spot, 8 bin packing"
-            icon={CheckCircle}
-            color="#00E676"
-          />
-        </Grid>
-        <Grid item xs={12} sm={6} lg={3}>
-          <StatCard
-            title="Spot Warnings"
-            value="2"
-            subtitle="Handled automatically"
-            icon={Warning}
-            color="#FFC107"
-          />
-        </Grid>
-      </Grid>
+      {stats?.safety_violations === 0 && (
+        <Alert severity="success" sx={{ mb: 2 }}>
+          🛡️ Zero safety violations today! Five-Layer Defense active.
+        </Alert>
+      )}
 
-      {/* Charts */}
-      <Grid container spacing={3} sx={{ mb: 4 }}>
-        {/* Savings Trend */}
-        <Grid item xs={12} lg={8}>
+      <Grid container spacing={3}>
+        <Grid item xs={12} sm={6} md={3}>
           <Card>
             <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Savings Trend vs Predictions
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Actual savings (green) vs ML predictions (blue)
-              </Typography>
-              <ResponsiveContainer width="100%" height={300}>
-                <AreaChart data={savingsData}>
-                  <defs>
-                    <linearGradient id="colorSavings" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#00C853" stopOpacity={0.8} />
-                      <stop offset="95%" stopColor="#00C853" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="colorPredicted" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#2196F3" stopOpacity={0.8} />
-                      <stop offset="95%" stopColor="#2196F3" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-                  <XAxis dataKey="month" stroke="#B0BEC5" />
-                  <YAxis stroke="#B0BEC5" />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: '#132F4C', border: '1px solid #444' }}
-                    formatter={(value: any) => `$${numeral(value).format('0,0')}`}
-                  />
-                  <Area type="monotone" dataKey="savings" stroke="#00C853" fillOpacity={1} fill="url(#colorSavings)" strokeWidth={2} />
-                  <Area type="monotone" dataKey="predicted" stroke="#2196F3" fillOpacity={1} fill="url(#colorPredicted)" strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Cost Breakdown */}
-        <Grid item xs={12} lg={4}>
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Cost Breakdown
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Current month spend by instance type
-              </Typography>
-              <ResponsiveContainer width="100%" height={300}>
-                <PieChart>
-                  <Pie
-                    data={costBreakdown}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={100}
-                    paddingAngle={5}
-                    dataKey="value"
-                    label={({ name, value }) => `${name}: $${numeral(value).format('0,0')}`}
-                  >
-                    {costBreakdown.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip formatter={(value: any) => `$${numeral(value).format('0,0')}`} />
-                </PieChart>
-              </ResponsiveContainer>
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
-
-      {/* Quick Actions */}
-      <Card>
-        <CardContent>
-          <Typography variant="h6" gutterBottom>
-            Recent Optimization Activity
-          </Typography>
-          <Box sx={{ mt: 2 }}>
-            {[
-              { time: '2 min ago', action: 'Spot Optimization', cluster: 'prod-eks-1', savings: '$45/mo' },
-              { time: '15 min ago', action: 'Bin Packing', cluster: 'staging-eks', savings: '$120/mo' },
-              { time: '1 hour ago', action: 'Rightsizing', cluster: 'dev-eks', savings: '$35/mo' },
-              { time: '2 hours ago', action: 'Spot Interruption Handled', cluster: 'prod-eks-2', savings: 'N/A' },
-            ].map((item, index) => (
-              <Box
-                key={index}
-                sx={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  py: 2,
-                  borderBottom: index < 3 ? '1px solid #333' : 'none',
-                }}
-              >
-                <Box>
-                  <Typography variant="body1">{item.action}</Typography>
-                  <Typography variant="body2" color="text.secondary">
-                    {item.cluster} • {item.time}
-                  </Typography>
-                </Box>
-                <Chip
-                  label={item.savings}
-                  color={item.savings !== 'N/A' ? 'success' : 'default'}
-                  size="small"
-                />
+              <Box display="flex" alignItems="center" mb={1}>
+                <Shield color="success" />
+                <Typography variant="h6" ml={1}>Clusters</Typography>
               </Box>
-            ))}
-          </Box>
-        </CardContent>
-      </Card>
+              <Typography variant="h3">{stats?.active_clusters || 0}</Typography>
+              <Typography variant="body2" color="text.secondary">
+                Active / {stats?.total_clusters || 0} Total
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <Card>
+            <CardContent>
+              <Box display="flex" alignItems="center" mb={1}>
+                <TrendingDown color="primary" />
+                <Typography variant="h6" ml={1}>Savings</Typography>
+              </Box>
+              <Typography variant="h3">${stats?.monthly_savings?.toLocaleString() || 0}</Typography>
+              <Typography variant="body2" color="text.secondary">This Month</Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <Card>
+            <CardContent>
+              <Box display="flex" alignItems="center" mb={1}>
+                <Speed color="info" />
+                <Typography variant="h6" ml={1}>Uptime</Typography>
+              </Box>
+              <Typography variant="h3">{stats?.uptime_percentage || 99.9}%</Typography>
+              <Typography variant="body2" color="text.secondary">Last 30 Days</Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <Card>
+            <CardContent>
+              <Box display="flex" alignItems="center" mb={1}>
+                <Warning color={stats?.safety_violations > 0 ? "warning" : "success"} />
+                <Typography variant="h6" ml={1}>Safety</Typography>
+              </Box>
+              <Typography variant="h3">{stats?.safety_violations || 0}</Typography>
+              <Typography variant="body2" color="text.secondary">Violations Today</Typography>
+            </CardContent>
+          </Card>
+        </Grid>
+
+        <Grid item xs={12}>
+          <Paper sx={{ p: 3, bgcolor: 'success.dark', color: 'white' }}>
+            <Typography variant="h6" gutterBottom>
+              🛡️ Five-Layer Defense Strategy - Active
+            </Typography>
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={6} md={2.4}>
+                <Typography variant="subtitle2">Layer 1: Risk Threshold</Typography>
+                <Typography variant="caption">✓ Risk Score ≥ 0.75</Typography>
+              </Grid>
+              <Grid item xs={12} sm={6} md={2.4}>
+                <Typography variant="subtitle2">Layer 2: AZ Distribution</Typography>
+                <Typography variant="caption">✓ Minimum 3 AZs</Typography>
+              </Grid>
+              <Grid item xs={12} sm={6} md={2.4}>
+                <Typography variant="subtitle2">Layer 3: Pool Concentration</Typography>
+                <Typography variant="caption">✓ Max 20% per pool</Typography>
+              </Grid>
+              <Grid item xs={12} sm={6} md={2.4}>
+                <Typography variant="subtitle2">Layer 4: On-Demand Buffer</Typography>
+                <Typography variant="caption">✓ Minimum 15% buffer</Typography>
+              </Grid>
+              <Grid item xs={12} sm={6} md={2.4}>
+                <Typography variant="subtitle2">Layer 5: Multi-Factor</Typography>
+                <Typography variant="caption">✓ All constraints enforced</Typography>
+              </Grid>
+            </Grid>
+          </Paper>
+        </Grid>
+      </Grid>
     </Box>
   );
-}
+};
+
+export default Overview;

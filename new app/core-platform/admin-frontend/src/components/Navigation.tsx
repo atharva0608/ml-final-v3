@@ -1,75 +1,111 @@
-import React from 'react';
-import { Link as RouterLink, useLocation } from 'react-router-dom';
+import React, { useState } from 'react';
 import {
-  AppBar,
-  Toolbar,
-  Typography,
-  Box,
-  Button,
-  Chip,
-  IconButton,
-  Tooltip,
+  AppBar, Toolbar, Typography, Drawer, List, ListItem, ListItemButton,
+  ListItemIcon, ListItemText, Box, IconButton, Divider
 } from '@mui/material';
 import {
-  Dashboard,
-  Cloud,
-  AttachMoney,
-  Timeline,
-  Speed,
-  Warning,
-  Notifications,
+  Dashboard, Storage, Monitor, TrendingUp, History, Menu as MenuIcon
 } from '@mui/icons-material';
+import { useNavigate, useLocation } from 'react-router-dom';
 
-const navItems = [
-  { label: 'Dashboard', path: '/', icon: Dashboard },
-  { label: 'Clusters', path: '/clusters', icon: Cloud },
-  { label: 'Cost Monitor', path: '/cost', icon: AttachMoney },
-  { label: 'Optimization', path: '/optimization', icon: Timeline },
-  { label: 'Live', path: '/live', icon: Speed },
-  { label: 'Spot Warnings', path: '/spot-warnings', icon: Warning },
-];
+const drawerWidth = 240;
 
-export default function Navigation() {
+const Navigation: React.FC = () => {
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const navigate = useNavigate();
   const location = useLocation();
 
-  return (
-    <AppBar position="fixed" sx={{ zIndex: (theme) => theme.zIndex.drawer + 1 }}>
+  const handleDrawerToggle = () => {
+    setMobileOpen(!mobileOpen);
+  };
+
+  const menuItems = [
+    { text: 'Dashboard', icon: <Dashboard />, path: '/dashboard' },
+    { text: 'Clusters', icon: <Storage />, path: '/clusters' },
+    { text: 'Live Monitoring', icon: <Monitor />, path: '/live-monitoring' },
+    { text: 'Cost Monitoring', icon: <TrendingUp />, path: '/cost-monitoring' },
+    { text: 'Optimization History', icon: <History />, path: '/optimization-history' },
+  ];
+
+  const drawer = (
+    <Box>
       <Toolbar>
-        <Box sx={{ display: 'flex', alignItems: 'center', flexGrow: 1 }}>
-          <Typography variant="h6" sx={{ fontWeight: 700, mr: 4 }}>
-            CloudOptim
-          </Typography>
-          <Chip label="Agentless" size="small" color="success" sx={{ mr: 2 }} />
-          <Box sx={{ display: 'flex', gap: 1 }}>
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const isActive = location.pathname === item.path;
-              return (
-                <Button
-                  key={item.path}
-                  component={RouterLink}
-                  to={item.path}
-                  startIcon={<Icon />}
-                  sx={{
-                    color: isActive ? 'primary.main' : 'text.primary',
-                    bgcolor: isActive ? 'primary.dark' : 'transparent',
-                    '&:hover': {
-                      bgcolor: 'primary.dark',
-                    },
-                  }}
-                >
-                  {item.label}
-                </Button>
-              );
-            })}
-          </Box>
-        </Box>
-        <Tooltip title="Notifications">
-          <IconButton color="inherit">
-            <Notifications />
-          </IconButton>
-        </Tooltip>
+        <Typography variant="h6" noWrap component="div">
+          CloudOptim Core
+        </Typography>
       </Toolbar>
-    </AppBar>
+      <Divider />
+      <List>
+        {menuItems.map((item) => (
+          <ListItem key={item.text} disablePadding>
+            <ListItemButton
+              selected={location.pathname === item.path}
+              onClick={() => {
+                navigate(item.path);
+                setMobileOpen(false);
+              }}
+            >
+              <ListItemIcon>{item.icon}</ListItemIcon>
+              <ListItemText primary={item.text} />
+            </ListItemButton>
+          </ListItem>
+        ))}
+      </List>
+    </Box>
   );
-}
+
+  return (
+    <>
+      <AppBar
+        position="fixed"
+        sx={{
+          width: { sm: `calc(100% - ${drawerWidth}px)` },
+          ml: { sm: `${drawerWidth}px` },
+        }}
+      >
+        <Toolbar>
+          <IconButton
+            color="inherit"
+            edge="start"
+            onClick={handleDrawerToggle}
+            sx={{ mr: 2, display: { sm: 'none' } }}
+          >
+            <MenuIcon />
+          </IconButton>
+          <Typography variant="h6" noWrap component="div">
+            Agentless Kubernetes Cost Optimization
+          </Typography>
+        </Toolbar>
+      </AppBar>
+      <Box
+        component="nav"
+        sx={{ width: { sm: drawerWidth }, flexShrink: { sm: 0 } }}
+      >
+        <Drawer
+          variant="temporary"
+          open={mobileOpen}
+          onClose={handleDrawerToggle}
+          ModalProps={{ keepMounted: true }}
+          sx={{
+            display: { xs: 'block', sm: 'none' },
+            '& .MuiDrawer-paper': { boxSizing: 'border-box', width: drawerWidth },
+          }}
+        >
+          {drawer}
+        </Drawer>
+        <Drawer
+          variant="permanent"
+          sx={{
+            display: { xs: 'none', sm: 'block' },
+            '& .MuiDrawer-paper': { boxSizing: 'border-box', width: drawerWidth },
+          }}
+          open
+        >
+          {drawer}
+        </Drawer>
+      </Box>
+    </>
+  );
+};
+
+export default Navigation;
