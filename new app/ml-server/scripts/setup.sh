@@ -474,7 +474,7 @@ if [ -d "$FRONTEND_DIR" ] && [ -f "$FRONTEND_DIR/package.json" ]; then
     cd "$FRONTEND_DIR"
 
     log "Installing npm dependencies..."
-    npm install --legacy-peer-deps
+    npm install --force
 
     log "Building frontend..."
     npm run build
