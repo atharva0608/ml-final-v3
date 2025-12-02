@@ -343,12 +343,12 @@ else
 fi
 
 # Copy frontend files
-if [ -d "$PROJECT_ROOT/ml-frontend" ]; then
-    log "Copying frontend files from $PROJECT_ROOT/ml-frontend..."
-    cp -r "$PROJECT_ROOT/ml-frontend"/* "$FRONTEND_DIR/" || warn "Failed to copy some frontend files"
+if [ -d "$PROJECT_ROOT/ml-frontend-new" ]; then
+    log "Copying frontend files from $PROJECT_ROOT/ml-frontend-new..."
+    cp -r "$PROJECT_ROOT/ml-frontend-new"/* "$FRONTEND_DIR/" || warn "Failed to copy some frontend files"
     log "✓ Frontend files copied"
 else
-    warn "Frontend directory not found at $PROJECT_ROOT/ml-frontend"
+    warn "Frontend directory not found at $PROJECT_ROOT/ml-frontend-new"
 fi
 
 # Copy decision engines
@@ -488,14 +488,14 @@ if [ -d "$FRONTEND_DIR" ] && [ -f "$FRONTEND_DIR/package.json" ]; then
     export GENERATE_SOURCEMAP=false
     npm run build
 
-    # Copy build to Nginx root (React uses 'build' not 'dist')
-    if [ -d "$FRONTEND_DIR/build" ]; then
+    # Copy build to Nginx root (Vite uses 'dist')
+    if [ -d "$FRONTEND_DIR/dist" ]; then
         sudo rm -rf "$NGINX_ROOT"/*
-        sudo cp -r build/* "$NGINX_ROOT/"
+        sudo cp -r dist/* "$NGINX_ROOT/"
         sudo chown -R www-data:www-data "$NGINX_ROOT"
         log "Frontend built and deployed"
     else
-        warn "No build directory found after build"
+        warn "No dist directory found after build"
     fi
 else
     warn "Frontend directory or package.json not found, skipping frontend build"
