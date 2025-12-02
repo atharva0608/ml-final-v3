@@ -195,7 +195,7 @@ async def metrics():
     }
 
 # Import and register routers
-from api.routes import decisions, features, testing
+from api.routes import decisions, features, testing, models, predictions, pricing, gap_filler, decision_engines, dashboard
 
 # Register decision engine routes (all 12 engines: 8 core + 4 advanced)
 app.include_router(
@@ -217,13 +217,48 @@ app.include_router(
     tags=["Testing Mode"]
 )
 
-# TODO: Implement and register remaining routers
-# from api.routes import models, predictions, gap_filler, pricing, refresh
-# app.include_router(models.router, prefix="/api/v1/ml", tags=["Models"])
-# app.include_router(predictions.router, prefix="/api/v1/ml", tags=["Predictions"])
-# app.include_router(gap_filler.router, prefix="/api/v1/ml", tags=["Data Gap Filling"])
-# app.include_router(pricing.router, prefix="/api/v1/ml", tags=["Pricing Data"])
-# app.include_router(refresh.router, prefix="/api/v1/ml", tags=["Model Refresh"])
+# Register models routes
+app.include_router(
+    models.router,
+    prefix="/api/v1",
+    tags=["Models"]
+)
+
+# Register predictions routes
+app.include_router(
+    predictions.router,
+    prefix="/api/v1",
+    tags=["Predictions"]
+)
+
+# Register pricing routes
+app.include_router(
+    pricing.router,
+    prefix="/api/v1",
+    tags=["Pricing"]
+)
+
+# Register gap filler routes
+app.include_router(
+    gap_filler.router,
+    prefix="/api/v1",
+    tags=["Data Gap Filler"]
+)
+
+# Register decision engines routes (direct endpoints)
+app.include_router(
+    decision_engines.router,
+    prefix="/api/v1",
+    tags=["Decision Engines API"]
+)
+
+# Register dashboard routes
+app.include_router(
+    dashboard.router,
+    prefix="/api/v1",
+    tags=["Dashboard"]
+)
+
 
 
 if __name__ == "__main__":

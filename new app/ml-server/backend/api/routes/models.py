@@ -66,6 +66,68 @@ async def upload_model(
     }
 
 
+@router.get("/models")
+async def get_models(
+    active: Optional[bool] = Query(None),
+    model_type: Optional[str] = Query(None),
+    limit: int = Query(50, le=100),
+    offset: int = Query(0, ge=0)
+):
+    """
+    List all uploaded models (simplified endpoint for frontend)
+    
+    Query Parameters:
+        active: Filter by active status
+        model_type: Filter by model type
+        limit: Maximum number of results
+        offset: Offset for pagination
+        
+    Returns:
+        List of models with metadata
+    """
+    logger.info(f"Listing models (active={active}, type={model_type}, limit={limit}, offset={offset})")
+    
+    # Mock model data matching frontend interface
+    mock_models = [
+        {
+            "id": "mod_price",
+            "name": "PricePrediction",
+            "version": "v3.2.1",
+            "accuracy": 0.94,
+            "status": "deployed",
+            "predictions24h": 14502,
+            "framework": "pytorch",
+            "lastTrained": "2024-11-20"
+        },
+        {
+            "id": "mod_spot",
+            "name": "SpotPredictor",
+            "version": "v1.0.4",
+            "accuracy": 0.88,
+            "status": "training",
+            "predictions24h": 0,
+            "framework": "sklearn",
+            "lastTrained": "Training..."
+        },
+        {
+            "id": "mod_mumbai",
+            "name": "MumbaiPricePredictor",
+            "version": "v2.1.0",
+            "accuracy": 0.91,
+            "status": "deployed",
+            "predictions24h": 3200,
+            "framework": "tensorflow",
+            "lastTrained": "2024-11-18"
+        }
+    ]
+    
+    return {
+        "status": "success",
+        "models": mock_models,
+        "total": len(mock_models)
+    }
+
+
 @router.get("/models/list", response_model=ModelListResponse)
 async def list_models(
     active: Optional[bool] = Query(None),
@@ -151,6 +213,28 @@ async def delete_model(model_id: UUID):
         "model_id": str(model_id),
         "deleted_at": "2025-11-28T00:00:00Z",
         "message": "Model deletion endpoint - implementation pending"
+    }
+
+
+@router.patch("/models/{model_id}/status")
+async def update_model_status(model_id: str, status: str):
+    """
+    Update model status
+    
+    Args:
+        model_id: Model ID
+        status: New status (deployed, training, failed)
+        
+    Returns:
+        Update confirmation
+    """
+    logger.info(f"Updating model {model_id} status to {status}")
+    
+    return {
+        "status": "success",
+        "model_id": model_id,
+        "new_status": status,
+        "updated_at": "2025-12-02T14:17:00Z"
     }
 
 
