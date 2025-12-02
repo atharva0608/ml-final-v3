@@ -479,10 +479,11 @@ if [ -d "$FRONTEND_DIR" ] && [ -f "$FRONTEND_DIR/package.json" ]; then
     # Ensure proper ownership and clean old build
     log "Ensuring proper permissions..."
     sudo chown -R $USER:$USER "$FRONTEND_DIR"
-    sudo rm -rf build/ node_modules/.cache
+    # Remove node_modules to ensure clean install (fixes binary incompatibilities)
+    sudo rm -rf build/ dist/ node_modules/
 
     log "Installing npm dependencies..."
-    npm install --force
+    npm install
 
     log "Building frontend..."
     export GENERATE_SOURCEMAP=false
