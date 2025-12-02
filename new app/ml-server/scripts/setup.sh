@@ -445,6 +445,9 @@ cat > "$BACKEND_DIR/start.sh" << 'BACKEND_START_EOF'
 cd /home/ubuntu/ml-server/backend
 source venv/bin/activate
 
+# Add ML server root to Python path for decision_engine imports
+export PYTHONPATH="/home/ubuntu/ml-server:$PYTHONPATH"
+
 if [ -f .env ]; then
     export $(grep -v '^#' .env | xargs)
 fi
@@ -565,6 +568,7 @@ StandardError=journal
 
 Environment=PATH=$BACKEND_DIR/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/home/ubuntu/ml-server
 
 NoNewPrivileges=true
 PrivateTmp=true
