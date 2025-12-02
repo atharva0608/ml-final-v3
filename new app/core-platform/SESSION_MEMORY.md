@@ -462,7 +462,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
 # Install system dependencies
 log "Step 2: Installing system dependencies..."
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    python3.11 python3.11-venv python3-pip \
+    python3 python3-venv python3-pip \
     postgresql-15 postgresql-contrib \
     redis-server \
     nginx \
@@ -517,7 +517,7 @@ mkdir -p /var/log/core-platform
 # Setup Python virtual environment
 log "Step 8: Setting up Python environment..."
 cd $APP_DIR/api
-python3.11 -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 
 # Install Python dependencies

@@ -745,7 +745,7 @@ async def lifespan(app: FastAPI):
 cd "/home/user/ml-final-v3/new app/core-platform"
 
 # Install dependencies
-python3.11 -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 

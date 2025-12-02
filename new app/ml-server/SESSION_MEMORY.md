@@ -916,8 +916,8 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
 # Install system dependencies
 log "Step 2: Installing system dependencies..."
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    python3.11 \
-    python3.11-venv \
+    python3 \
+    python3-venv \
     python3-pip \
     postgresql-15 \
     postgresql-contrib \
@@ -969,7 +969,7 @@ log "Directory structure created"
 # Setup Python virtual environment
 log "Step 6: Setting up Python virtual environment..."
 cd $APP_DIR/backend
-python3.11 -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 
 # Install Python dependencies
@@ -1253,7 +1253,7 @@ For manual installation or troubleshooting, follow these steps:
 # Ubuntu 22.04/24.04
 sudo apt-get update
 sudo apt-get install -y \
-    python3.11 python3.11-venv python3-pip \
+    python3 python3-venv python3-pip \
     postgresql-15 postgresql-contrib \
     redis-server \
     nginx \
@@ -1275,7 +1275,7 @@ sudo ./aws/install
 
 ```bash
 # Create virtual environment
-python3.11 -m venv /opt/ml-server/backend/venv
+python3 -m venv /opt/ml-server/backend/venv
 source /opt/ml-server/backend/venv/bin/activate
 
 # Install dependencies (see requirements.txt above)
