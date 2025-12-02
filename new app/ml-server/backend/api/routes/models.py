@@ -15,14 +15,16 @@ from typing import Optional
 from uuid import UUID
 import logging
 
-from database.schemas import (
-    ModelUploadRequest,
-    ModelResponse,
-    ModelListResponse
-)
+# Commented out - these schemas are not used in current implementation
+# from database.schemas import (
+#     ModelUploadRequest,
+#     ModelResponse,
+#     ModelListResponse
+# )
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
 
 
 @router.post("/models/upload")
@@ -128,7 +130,7 @@ async def get_models(
     }
 
 
-@router.get("/models/list", response_model=ModelListResponse)
+@router.get("/models/list")  # response_model=ModelListResponse - schema not available
 async def list_models(
     active: Optional[bool] = Query(None),
     model_type: Optional[str] = Query(None),
@@ -238,7 +240,7 @@ async def update_model_status(model_id: str, status: str):
     }
 
 
-@router.get("/models/{model_id}/details", response_model=ModelResponse)
+@router.get("/models/{model_id}/details")  # response_model=ModelResponse - schema not available
 async def get_model_details(model_id: UUID):
     """
     Get detailed model information
