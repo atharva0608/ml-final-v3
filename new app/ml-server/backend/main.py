@@ -195,7 +195,7 @@ async def metrics():
     }
 
 # Import and register routers
-from api.routes import decisions, features
+from api.routes import decisions, features, testing
 
 # Register decision engine routes (all 12 engines: 8 core + 4 advanced)
 app.include_router(
@@ -209,6 +209,12 @@ app.include_router(
     features.router,
     prefix="/api/v1/ml",
     tags=["Feature Toggles"]
+)
+
+# Register testing mode routes
+app.include_router(
+    testing.router,
+    tags=["Testing Mode"]
 )
 
 # TODO: Implement and register remaining routers
